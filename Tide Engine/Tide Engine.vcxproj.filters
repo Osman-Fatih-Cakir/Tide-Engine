@@ -24,7 +24,7 @@
     <ClCompile Include="src\gpu_image.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\camera.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\shader.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\pipeline.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\renderer.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\ui.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\Dependency\tracy\public\TracyClient.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\Dependency\imgui\imgui.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -44,7 +44,7 @@
     <ClInclude Include="src\scene.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\camera.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\shader.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\pipeline.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\renderer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\ui.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\settings.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>

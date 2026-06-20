@@ -65,9 +65,10 @@ void VulkanEngine::init() {
     initProfiler();
     initImmediate();
     loadScene();
-    if (m_scene.setLayout)
-        m_meshPipeline = createMeshPipeline(m_device, m_swapchainFormat, m_depthFormat,
-                                            m_scene.setLayout);
+    if (m_scene.setLayout) {
+        m_renderer.init(*this, m_swapchainFormat, m_depthFormat, m_scene.setLayout);
+        m_renderer.createTargets(*this, m_swapchainExtent);
+    }
     m_ui.init(*this, m_swapchainFormat, 2, (uint32_t)m_swapchainImages.size());
 }
 
@@ -436,6 +437,8 @@ void VulkanEngine::recreateSwapchain() {
     vkDeviceWaitIdle(m_device);
     cleanupSwapchain();
     createSwapchain();
+    if (m_scene.setLayout)
+        m_renderer.createTargets(*this, m_swapchainExtent);
 }
 
 // ===========================================================================
@@ -565,102 +568,50 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
 
     {
-        TracyVkZone(m_tracyCtx, cmd, "Forward");
-
-        // UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL  (+ depth UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL)
-        VkImageMemoryBarrier2 toAttach[2]{};
-        toAttach[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        toAttach[0].srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-        toAttach[0].srcAccessMask = 0;
-        toAttach[0].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        toAttach[0].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        toAttach[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        toAttach[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        toAttach[0].image = m_swapchainImages[imageIndex];
-        toAttach[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-
-        toAttach[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        toAttach[1].srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-        toAttach[1].srcAccessMask = 0;
-        toAttach[1].dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        toAttach[1].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        toAttach[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        toAttach[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        toAttach[1].image = m_depthImage;
-        toAttach[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-
-        VkDependencyInfo dep{};
-        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.imageMemoryBarrierCount = 2;
-        dep.pImageMemoryBarriers = toAttach;
-        vkCmdPipelineBarrier2(cmd, &dep);
-
-        VkRenderingAttachmentInfo color{};
-        color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color.imageView = m_swapchainImageViews[imageIndex];
-        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color.clearValue.color = {{0.005f, 0.005f, 0.012f, 1.0f}};
-
-        VkRenderingAttachmentInfo depth{};
-        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        depth.imageView = m_depthView;
-        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth.clearValue.depthStencil = {1.0f, 0};
-
-        VkRenderingInfo ri{};
-        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        ri.renderArea.extent = m_swapchainExtent;
-        ri.layerCount = 1;
-        ri.colorAttachmentCount = 1;
-        ri.pColorAttachments = &color;
-        ri.pDepthAttachment = &depth;
-
-        vkCmdBeginRendering(cmd, &ri);
-
-        // Dynamic viewport/scissor.
-        VkViewport vp{};
-        vp.width = (float)m_swapchainExtent.width;
-        vp.height = (float)m_swapchainExtent.height;
-        vp.maxDepth = 1.0f;
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        VkRect2D scissor{};
-        scissor.extent = m_swapchainExtent;
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        // Draw the scene (simple forward; Faz 4 replaces this with V-buffer).
-        if (m_scene.indexCount > 0 && m_meshPipeline.pipeline) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline.pipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    m_meshPipeline.layout, 0, 1, &m_scene.descriptorSet,
-                                    0, nullptr);
-
+        // V-buffer: Visibility (raster) -> Resolve (compute, PBR->HDR) -> Tonemap.
+        // Leaves the swapchain image in COLOR_ATTACHMENT_OPTIMAL.
+        if (m_scene.indexCount > 0) {
             float aspect = (float)m_swapchainExtent.width / (float)m_swapchainExtent.height;
             glm::mat4 viewProj = m_camera.proj(aspect) * m_camera.view();
-
-            VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &m_scene.vertexBuffer.buffer, &offset);
-            vkCmdBindIndexBuffer(cmd, m_scene.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-            glm::vec3 sun = sunDirection(m_settings);
-            for (const MeshDraw& d : m_scene.draws) {
-                MeshPush push{};
-                push.viewProj = viewProj;
-                push.model = d.transform;
-                push.sunDir = glm::vec4(sun, m_settings.ambient);
-                push.materialIndex = d.materialIndex;
-                vkCmdPushConstants(cmd, m_meshPipeline.layout,
-                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   0, sizeof(MeshPush), &push);
-                vkCmdDrawIndexed(cmd, d.indexCount, 1, d.firstIndex, d.vertexOffset, 0);
-            }
+            m_renderer.record(cmd, m_scene, viewProj, m_camera.position, m_settings,
+                              m_swapchainExtent,
+                              m_swapchainImages[imageIndex], m_swapchainImageViews[imageIndex],
+                              m_depthImage, m_depthView, m_tracyCtx);
+        } else {
+            // No scene: just put the swapchain into a presentable color state.
+            VkImageMemoryBarrier2 toAttach{};
+            toAttach.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            toAttach.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            toAttach.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            toAttach.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            toAttach.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            toAttach.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            toAttach.image = m_swapchainImages[imageIndex];
+            toAttach.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = &toAttach;
+            vkCmdPipelineBarrier2(cmd, &dep);
         }
 
-        vkCmdEndRendering(cmd);
+        // Make the tonemap/clear color writes visible to the ImGui pass's load.
+        VkImageMemoryBarrier2 toUi{};
+        toUi.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        toUi.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        toUi.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        toUi.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        toUi.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        toUi.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        toUi.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        toUi.image = m_swapchainImages[imageIndex];
+        toUi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkDependencyInfo depUi{};
+        depUi.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depUi.imageMemoryBarrierCount = 1;
+        depUi.pImageMemoryBarriers = &toUi;
+        vkCmdPipelineBarrier2(cmd, &depUi);
 
         // --- ImGui pass (load existing color, no depth) ---
         VkRenderingAttachmentInfo uiColor{};
@@ -798,7 +749,7 @@ void VulkanEngine::cleanup() {
     }
     if (m_immFence) vkDestroyFence(m_device, m_immFence, nullptr);
     if (m_immPool) vkDestroyCommandPool(m_device, m_immPool, nullptr);
-    destroyPipeline(m_device, m_meshPipeline);
+    m_renderer.destroy(*this);
     cleanupSwapchain();
     m_scene.destroy(m_device, m_allocator);
     if (m_allocator) vmaDestroyAllocator(m_allocator);

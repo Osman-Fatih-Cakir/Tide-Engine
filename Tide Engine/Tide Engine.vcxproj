@@ -158,7 +158,7 @@
     <ClCompile Include="src\gpu_image.cpp" />
     <ClCompile Include="src\camera.cpp" />
     <ClCompile Include="src\shader.cpp" />
-    <ClCompile Include="src\pipeline.cpp" />
+    <ClCompile Include="src\renderer.cpp" />
     <ClCompile Include="src\ui.cpp" />
     <ClCompile Include="..\Dependency\tracy\public\TracyClient.cpp" />
     <ClCompile Include="..\Dependency\imgui\imgui.cpp" />
@@ -178,13 +178,16 @@
     <ClInclude Include="src\scene.h" />
     <ClInclude Include="src\camera.h" />
     <ClInclude Include="src\shader.h" />
-    <ClInclude Include="src\pipeline.h" />
+    <ClInclude Include="src\renderer.h" />
     <ClInclude Include="src\ui.h" />
     <ClInclude Include="src\settings.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\shaders\mesh.vert" />
-    <None Include="..\shaders\mesh.frag" />
+    <None Include="..\shaders\vis.vert" />
+    <None Include="..\shaders\vis.frag" />
+    <None Include="..\shaders\resolve.comp" />
+    <None Include="..\shaders\fullscreen.vert" />
+    <None Include="..\shaders\tonemap.frag" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

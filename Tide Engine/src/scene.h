@@ -16,11 +16,13 @@ public:
     Buffer vertexBuffer{};
     Buffer indexBuffer{};
     Buffer materialBuffer{};
+    Buffer drawBuffer{};   // GpuDraw[] — read by the resolve compute
 
     std::vector<MeshDraw> draws;
     uint32_t vertexCount   = 0;
     uint32_t indexCount    = 0;
     uint32_t materialCount = 0;
+    uint32_t drawCount     = 0;
 
     // --- bindless textures + material SSBO ---
     std::vector<Image>    textures;

@@ -23,14 +23,14 @@ struct GpuMaterial {
     int   _pad2 = 0;
 };
 
-// Push constant for the simple forward pass.
-// 160 bytes — within RTX 3070's 256-byte limit (target HW; not the 128 minimum).
-struct MeshPush {
-    glm::mat4 viewProj;
-    glm::mat4 model;
-    glm::vec4 sunDir;        // xyz = direction to sun, w = ambient
-    uint32_t  materialIndex;
-    uint32_t  _pad[3];
+// Per-draw record as it lives in the draw SSBO (read by the resolve compute to
+// reconstruct a triangle from a packed visibility ID). scalar layout in GLSL.
+struct GpuDraw {
+    glm::mat4 transform;        // node world transform
+    uint32_t  firstIndex   = 0; // offset into the shared index buffer
+    uint32_t  vertexOffset = 0; // added to each fetched index
+    uint32_t  materialIndex = 0;
+    uint32_t  _pad = 0;
 };
 
 // Decoded texture (RGBA8) ready for GPU upload.

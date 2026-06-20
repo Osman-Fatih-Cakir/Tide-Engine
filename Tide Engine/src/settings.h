@@ -6,6 +6,13 @@ struct Settings {
     float sunAzimuthDeg   = 40.0f;
     float sunElevationDeg = 45.0f;
     float ambient         = 0.2f;
+    float sunIntensity    = 4.0f;  // directional sun radiance multiplier
+    float exposure        = 1.0f;  // tonemap exposure
+
+    // Frame-time graph.
+    bool  showFrameGraph  = true;
+    int   frameGraphHz    = 10;     // samples per second fed to the graph
+    float frameGraphMaxMs = 100.0f; // fixed Y-axis top (ms); values clamp to it
 };
 
 // Light direction (pointing toward the sun) from azimuth/elevation.

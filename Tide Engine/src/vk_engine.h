@@ -2,7 +2,7 @@
 #include "pch.h"
 #include "scene.h"
 #include "camera.h"
-#include "pipeline.h"
+#include "renderer.h"
 #include "ui.h"
 #include "settings.h"
 
@@ -102,9 +102,9 @@ private:
     VkImageView   m_depthView  = VK_NULL_HANDLE;
     VkFormat      m_depthFormat = VK_FORMAT_D32_SFLOAT;
 
-    // --- forward pass + camera (temporary; replaced by V-buffer in Faz 4) ---
-    GraphicsPipeline m_meshPipeline;
-    Camera           m_camera;
+    // --- visibility-buffer renderer + camera ---
+    Renderer m_renderer;
+    Camera   m_camera;
 
     // --- debug UI + tunables ---
     Ui       m_ui;

@@ -1,0 +1,147 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const float PI = 3.14159265359;
+
+// ----- Scene set (set 0) -----
+struct GpuMaterial {
+    vec4  baseColorFactor;
+    int   baseColorTexture;
+    int   normalTexture;
+    int   metalRoughTexture;
+    float metallicFactor;
+    float roughnessFactor;
+    int   pad0; int pad1; int pad2;
+};
+struct Vertex { vec3 position; vec3 normal; vec2 uv; };
+struct GpuDraw {
+    mat4 transform;
+    uint firstIndex;
+    uint vertexOffset;
+    uint materialIndex;
+    uint pad;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer Materials { GpuMaterial materials[]; };
+layout(set = 0, binding = 1) uniform sampler2D textures[];
+layout(scalar, set = 0, binding = 2) readonly buffer Vertices { Vertex vertices[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
+layout(scalar, set = 0, binding = 4) readonly buffer Draws { GpuDraw draws[]; };
+
+// ----- Resolve set (set 1) -----
+layout(r32ui, set = 1, binding = 0) uniform readonly uimage2D visImage;
+layout(rgba16f, set = 1, binding = 1) uniform writeonly image2D hdrImage;
+
+layout(push_constant) uniform Push {
+    mat4  viewProj;
+    vec4  cameraPos;
+    vec4  sunDir;    // xyz = dir to sun, w = ambient
+    vec4  sunColor;  // rgb = radiance
+    uvec2 screenSize;
+} pc;
+
+float cross2(vec2 a, vec2 b) { return a.x * b.y - a.y * b.x; }
+
+vec3 cookTorrance(vec3 N, vec3 V, vec3 L, vec3 albedo, float metallic, float roughness) {
+    vec3 H = normalize(V + L);
+    float NdotL = max(dot(N, L), 0.0);
+    float NdotV = max(dot(N, V), 1e-4);
+    float NdotH = max(dot(N, H), 0.0);
+    float VdotH = max(dot(V, H), 0.0);
+
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+    float a  = roughness * roughness;
+    float a2 = a * a;
+    float dd = (NdotH * NdotH * (a2 - 1.0) + 1.0);
+    float D  = a2 / max(PI * dd * dd, 1e-7);
+
+    float k  = (roughness + 1.0); k = k * k / 8.0;
+    float gv = NdotV / (NdotV * (1.0 - k) + k);
+    float gl = NdotL / (NdotL * (1.0 - k) + k);
+    float G  = gv * gl;
+
+    vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+    vec3 spec = (D * G * F) / (4.0 * NdotV * NdotL + 1e-4);
+    vec3 kd = (1.0 - F) * (1.0 - metallic);
+    vec3 diffuse = kd * albedo / PI;
+    return (diffuse + spec) * pc.sunColor.rgb * NdotL;
+}
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= int(pc.screenSize.x) || pix.y >= int(pc.screenSize.y)) return;
+
+    uint v = imageLoad(visImage, pix).r;
+    if (v == 0xFFFFFFFFu) {
+        imageStore(hdrImage, pix, vec4(0.02, 0.03, 0.05, 1.0)); // empty -> dim sky
+        return;
+    }
+
+    uint drawID = v >> 20;
+    uint primID = v & 0xFFFFFu;
+    GpuDraw d = draws[drawID];
+
+    uint base = d.firstIndex + primID * 3u;
+    uint i0 = indices[base + 0u] + d.vertexOffset;
+    uint i1 = indices[base + 1u] + d.vertexOffset;
+    uint i2 = indices[base + 2u] + d.vertexOffset;
+    Vertex a0 = vertices[i0];
+    Vertex a1 = vertices[i1];
+    Vertex a2 = vertices[i2];
+
+    // World + clip positions.
+    vec3 wp0 = (d.transform * vec4(a0.position, 1.0)).xyz;
+    vec3 wp1 = (d.transform * vec4(a1.position, 1.0)).xyz;
+    vec3 wp2 = (d.transform * vec4(a2.position, 1.0)).xyz;
+    vec4 c0 = pc.viewProj * vec4(wp0, 1.0);
+    vec4 c1 = pc.viewProj * vec4(wp1, 1.0);
+    vec4 c2 = pc.viewProj * vec4(wp2, 1.0);
+    vec3 n0 = c0.xyz / c0.w;
+    vec3 n1 = c1.xyz / c1.w;
+    vec3 n2 = c2.xyz / c2.w;
+
+    // Pixel NDC (same convention the vis pass rasterized with).
+    vec2 uv = (vec2(pix) + 0.5) / vec2(pc.screenSize);
+    vec2 p = uv * 2.0 - 1.0;
+
+    // 2D barycentric, then perspective-correct using 1/w.
+    float area = cross2(n1.xy - n0.xy, n2.xy - n0.xy);
+    float l0 = cross2(n1.xy - p, n2.xy - p) / area;
+    float l1 = cross2(n2.xy - p, n0.xy - p) / area;
+    float l2 = cross2(n0.xy - p, n1.xy - p) / area;
+    vec3 pw = vec3(l0 / c0.w, l1 / c1.w, l2 / c2.w);
+    pw /= (pw.x + pw.y + pw.z);
+
+    vec3 worldPos = wp0 * pw.x + wp1 * pw.y + wp2 * pw.z;
+    mat3 nm = transpose(inverse(mat3(d.transform)));
+    vec3 N = normalize(nm * (a0.normal * pw.x + a1.normal * pw.y + a2.normal * pw.z));
+    vec2 tuv = a0.uv * pw.x + a1.uv * pw.y + a2.uv * pw.z;
+
+    // Material.
+    GpuMaterial m = materials[d.materialIndex];
+    vec3 albedo = m.baseColorFactor.rgb;
+    if (m.baseColorTexture >= 0)
+        albedo *= textureLod(textures[nonuniformEXT(m.baseColorTexture)], tuv, 0.0).rgb;
+    float metallic  = m.metallicFactor;
+    float roughness = m.roughnessFactor;
+    if (m.metalRoughTexture >= 0) {
+        vec4 mr = textureLod(textures[nonuniformEXT(m.metalRoughTexture)], tuv, 0.0);
+        roughness *= mr.g; // glTF: G = roughness
+        metallic  *= mr.b; // glTF: B = metallic
+    }
+    roughness = clamp(roughness, 0.04, 1.0);
+
+    // Two-sided: face the normal toward the viewer.
+    vec3 V = normalize(pc.cameraPos.xyz - worldPos);
+    if (dot(N, V) < 0.0) N = -N;
+    vec3 L = normalize(pc.sunDir.xyz);
+
+    vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness);
+    color += pc.sunDir.w * albedo; // flat ambient (real GI comes in Faz 7)
+
+    imageStore(hdrImage, pix, vec4(color, 1.0));
+}

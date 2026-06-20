@@ -57,6 +57,22 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                           "Scene Material Buffer");
 
+    // Flatten draws into the GPU draw SSBO (resolve compute reconstructs triangles).
+    drawCount = (uint32_t)draws.size();
+    if (drawCount) {
+        std::vector<GpuDraw> gpuDraws(drawCount);
+        for (uint32_t i = 0; i < drawCount; i++) {
+            gpuDraws[i].transform     = draws[i].transform;
+            gpuDraws[i].firstIndex    = draws[i].firstIndex;
+            gpuDraws[i].vertexOffset  = (uint32_t)draws[i].vertexOffset;
+            gpuDraws[i].materialIndex = draws[i].materialIndex;
+        }
+        drawBuffer = makeDeviceBuffer(eng, gpuDraws.data(),
+                                      drawCount * sizeof(GpuDraw),
+                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                      "Scene Draw Buffer");
+    }
+
     buildTexturesAndDescriptors(eng, data);
 
     TE_INFO("Scene: draws=%u  vertices=%u  indices=%u  materials=%u  textures=%u\n",
@@ -88,39 +104,42 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
 
     const uint32_t arrayCount = textureCount > 0 ? textureCount : 1;
 
-    // Descriptor set layout: binding0 = material SSBO, binding1 = bindless texture array.
-    VkDescriptorSetLayoutBinding bindings[2]{};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    bindings[1].binding = 1;
+    // Scene descriptor set (read by the resolve compute):
+    //   b0 material SSBO, b1 bindless texture array,
+    //   b2 vertex SSBO, b3 index SSBO, b4 draw SSBO.
+    VkDescriptorSetLayoutBinding bindings[5]{};
+    for (uint32_t i = 0; i < 5; i++) {
+        bindings[i].binding = i;
+        bindings[i].descriptorCount = 1;
+        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    }
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = arrayCount;
-    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    VkDescriptorBindingFlags flags[2] = {
+    VkDescriptorBindingFlags flags[5] = {
         0,
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+        0, 0, 0,
     };
     VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{};
     flagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    flagsInfo.bindingCount = 2;
+    flagsInfo.bindingCount = 5;
     flagsInfo.pBindingFlags = flags;
 
     VkDescriptorSetLayoutCreateInfo lci{};
     lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     lci.pNext = &flagsInfo;
     lci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    lci.bindingCount = 2;
+    lci.bindingCount = 5;
     lci.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &setLayout));
 
     // Pool.
     VkDescriptorPoolSize sizes[2]{};
     sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    sizes[0].descriptorCount = 1;
+    sizes[0].descriptorCount = 4; // material + vertex + index + draw
     sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sizes[1].descriptorCount = arrayCount;
 
@@ -141,17 +160,25 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
 
     std::vector<VkWriteDescriptorSet> writes;
 
-    VkDescriptorBufferInfo matInfo{};
-    if (materialBuffer.buffer) {
-        matInfo.buffer = materialBuffer.buffer;
-        matInfo.range = VK_WHOLE_SIZE;
+    // b0 material, b2 vertex, b3 index, b4 draw — all storage buffers.
+    struct { uint32_t binding; VkBuffer buffer; } ssbos[] = {
+        {0, materialBuffer.buffer},
+        {2, vertexBuffer.buffer},
+        {3, indexBuffer.buffer},
+        {4, drawBuffer.buffer},
+    };
+    VkDescriptorBufferInfo bufInfos[4]{};
+    for (uint32_t i = 0; i < 4; i++) {
+        if (!ssbos[i].buffer) continue;
+        bufInfos[i].buffer = ssbos[i].buffer;
+        bufInfos[i].range = VK_WHOLE_SIZE;
         VkWriteDescriptorSet w{};
         w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w.dstSet = descriptorSet;
-        w.dstBinding = 0;
+        w.dstBinding = ssbos[i].binding;
         w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         w.descriptorCount = 1;
-        w.pBufferInfo = &matInfo;
+        w.pBufferInfo = &bufInfos[i];
         writes.push_back(w);
     }
 
@@ -191,4 +218,5 @@ void Scene::destroy(VkDevice device, VmaAllocator alloc) {
     destroyBuffer(alloc, vertexBuffer);
     destroyBuffer(alloc, indexBuffer);
     destroyBuffer(alloc, materialBuffer);
+    destroyBuffer(alloc, drawBuffer);
 }
