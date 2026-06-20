@@ -18,10 +18,17 @@
     <ClCompile Include="src\main.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\vk_engine.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\vma_impl.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\gltf_impl.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\gltf_loader.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\scene.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\Dependency\tracy\public\TracyClient.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\pch.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\vk_engine.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\gpu_buffer.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\mesh.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\gltf_loader.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\scene.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>

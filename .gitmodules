@@ -11,3 +11,9 @@
 [submodule "Dependency/tracy"]
 	path = Dependency/tracy
 	url = https://github.com/wolfpld/tracy.git
+[submodule "Dependency/glm"]
+	path = Dependency/glm
+	url = https://github.com/g-truc/glm.git
+[submodule "Dependency/stb"]
+	path = Dependency/stb
+	url = https://github.com/nothings/stb.git

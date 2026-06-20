@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include "scene.h"
 
 // Number of frames the CPU may work ahead of the GPU.
 inline constexpr uint32_t FRAMES_IN_FLIGHT = 2;
@@ -20,6 +21,13 @@ public:
     void run();
     void cleanup();
 
+    // --- accessors / utilities used by uploaders (Scene, etc.) ---
+    VkDevice     device() const { return m_device; }
+    VmaAllocator allocator() const { return m_allocator; }
+    // Run GPU work synchronously (staging copies, etc.).
+    void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
+    void setDebugName(uint64_t handle, VkObjectType type, const char* name);
+
 private:
     // --- setup steps ---
     void initWindow();
@@ -33,13 +41,12 @@ private:
     void recreateSwapchain();
     void initFrames();
     void initProfiler();
+    void initImmediate();
+    void loadScene();
 
     // --- per-frame ---
     void drawFrame();
     void recordCommands(VkCommandBuffer cmd, uint32_t imageIndex);
-
-    // --- helpers ---
-    void setDebugName(uint64_t handle, VkObjectType type, const char* name);
 
     // --- window ---
     GLFWwindow* m_window           = nullptr;
@@ -69,6 +76,14 @@ private:
     // --- frames ---
     FrameData m_frames[FRAMES_IN_FLIGHT];
     uint32_t  m_currentFrame = 0;
+
+    // --- immediate submit (staging uploads) ---
+    VkCommandPool   m_immPool  = VK_NULL_HANDLE;
+    VkCommandBuffer m_immCmd   = VK_NULL_HANDLE;
+    VkFence         m_immFence = VK_NULL_HANDLE;
+
+    // --- scene ---
+    Scene m_scene;
 
     // --- profiling ---
     TracyVkCtx m_tracyCtx = nullptr;

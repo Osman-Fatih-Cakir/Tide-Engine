@@ -1,4 +1,5 @@
 #include "vk_engine.h"
+#include "gltf_loader.h"
 
 // ---------------------------------------------------------------------------
 // Config
@@ -28,7 +29,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     const VkDebugUtilsMessengerCallbackDataEXT* data,
     void* /*user*/) {
     if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        TE_Log("[VL] %s\n", data->pMessage);
+        if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+            TE_ERROR("[VL] %s\n", data->pMessage);
+        else
+            TE_WARN("[VL] %s\n", data->pMessage);
     }
     return VK_FALSE;
 }
@@ -58,6 +62,8 @@ void VulkanEngine::init() {
     createSwapchain();
     initFrames();
     initProfiler();
+    initImmediate();
+    loadScene();
 }
 
 void VulkanEngine::run() {
@@ -90,13 +96,13 @@ void VulkanEngine::run() {
 // ===========================================================================
 void VulkanEngine::initWindow() {
     if (!glfwInit()) {
-        TE_Log("glfwInit failed\n");
+        TE_ERROR("glfwInit failed\n");
         std::abort();
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // no OpenGL context
     m_window = glfwCreateWindow((int)m_width, (int)m_height, "Tide Engine", nullptr, nullptr);
     if (!m_window) {
-        TE_Log("glfwCreateWindow failed\n");
+        TE_ERROR("glfwCreateWindow failed\n");
         std::abort();
     }
     glfwSetWindowUserPointer(m_window, this);
@@ -173,7 +179,7 @@ static bool hasAllExtensions(VkPhysicalDevice dev) {
 void VulkanEngine::pickPhysicalDevice() {
     uint32_t count = 0;
     vkEnumeratePhysicalDevices(m_instance, &count, nullptr);
-    if (count == 0) { TE_Log("No Vulkan GPU found\n"); std::abort(); }
+    if (count == 0) { TE_ERROR("No Vulkan GPU found\n"); std::abort(); }
     std::vector<VkPhysicalDevice> devices(count);
     vkEnumeratePhysicalDevices(m_instance, &count, devices.data());
 
@@ -202,7 +208,7 @@ void VulkanEngine::pickPhysicalDevice() {
         m_queueFamily = *family;
         if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             m_physicalDevice = dev;
-            TE_Log("GPU: %s\n", props.deviceName);
+            TE_INFO("GPU: %s\n", props.deviceName);
             return;
         }
         if (fallback == VK_NULL_HANDLE) fallback = dev;
@@ -212,7 +218,7 @@ void VulkanEngine::pickPhysicalDevice() {
         m_physicalDevice = fallback;
         return;
     }
-    TE_Log("No GPU with required extensions (swapchain/accel/ray query)\n");
+    TE_ERROR("No GPU with required extensions (swapchain/accel/ray query)\n");
     std::abort();
 }
 
@@ -430,6 +436,64 @@ void VulkanEngine::initProfiler() {
 }
 
 // ===========================================================================
+// Immediate submit (synchronous GPU work for staging uploads)
+// ===========================================================================
+void VulkanEngine::initImmediate() {
+    VkCommandPoolCreateInfo pci{};
+    pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+                VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pci.queueFamilyIndex = m_queueFamily;
+    VK_CHECK(vkCreateCommandPool(m_device, &pci, nullptr, &m_immPool));
+
+    VkCommandBufferAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ai.commandPool = m_immPool;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    VK_CHECK(vkAllocateCommandBuffers(m_device, &ai, &m_immCmd));
+
+    VkFenceCreateInfo fci{};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VK_CHECK(vkCreateFence(m_device, &fci, nullptr, &m_immFence));
+}
+
+void VulkanEngine::immediateSubmit(const std::function<void(VkCommandBuffer)>& fn) {
+    VK_CHECK(vkResetFences(m_device, 1, &m_immFence));
+    VK_CHECK(vkResetCommandPool(m_device, m_immPool, 0));
+
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(m_immCmd, &bi));
+    fn(m_immCmd);
+    VK_CHECK(vkEndCommandBuffer(m_immCmd));
+
+    VkCommandBufferSubmitInfo cmdInfo{};
+    cmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdInfo.commandBuffer = m_immCmd;
+
+    VkSubmitInfo2 submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &cmdInfo;
+    VK_CHECK(vkQueueSubmit2(m_queue, 1, &submit, m_immFence));
+    VK_CHECK(vkWaitForFences(m_device, 1, &m_immFence, VK_TRUE, UINT64_MAX));
+}
+
+// ===========================================================================
+// Scene load
+// ===========================================================================
+void VulkanEngine::loadScene() {
+    MeshData data;
+    if (!loadGltf("../Resources/nowindows/Room_NoWindows.gltf", data)) {
+        TE_ERROR("glTF load failed; continuing with empty scene.\n");
+        return;
+    }
+    m_scene.build(*this, data);
+}
+
+// ===========================================================================
 // Drawing
 // ===========================================================================
 void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
@@ -592,7 +656,10 @@ void VulkanEngine::cleanup() {
         vkDestroySemaphore(m_device, m_frames[i].imageAvailable, nullptr);
         vkDestroyCommandPool(m_device, m_frames[i].pool, nullptr);
     }
+    if (m_immFence) vkDestroyFence(m_device, m_immFence, nullptr);
+    if (m_immPool) vkDestroyCommandPool(m_device, m_immPool, nullptr);
     cleanupSwapchain();
+    m_scene.destroy(m_allocator);
     if (m_allocator) vmaDestroyAllocator(m_allocator);
     if (m_device) vkDestroyDevice(m_device, nullptr);
     if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
