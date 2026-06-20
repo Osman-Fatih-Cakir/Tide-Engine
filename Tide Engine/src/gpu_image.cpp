@@ -1,6 +1,7 @@
 #include "gpu_image.h"
 #include "gpu_buffer.h"
 #include "vk_engine.h"
+#include <cmath>
 
 Image createTextureImage(VulkanEngine& eng, const unsigned char* rgba, int w, int h,
                          bool srgb) {
@@ -23,55 +24,81 @@ Image createTextureImage(VulkanEngine& eng, const unsigned char* rgba, int w, in
     ici.imageType = VK_IMAGE_TYPE_2D;
     ici.format = format;
     ici.extent = {(uint32_t)w, (uint32_t)h, 1};
-    ici.mipLevels = 1;
+    // Full mip chain, generated on the GPU by successive blits.
+    const uint32_t mipLevels =
+        (uint32_t)std::floor(std::log2((float)(w > h ? w : h))) + 1u;
+    ici.mipLevels = mipLevels;
     ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    // TRANSFER_SRC needed: each mip is the blit source for the next.
+    ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT;
 
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO;
     VK_CHECK(vmaCreateImage(alloc, &ici, &ai, &out.image, &out.alloc, nullptr));
 
     eng.immediateSubmit([&](VkCommandBuffer cmd) {
-        VkImageMemoryBarrier2 toDst{};
-        toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        toDst.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-        toDst.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-        toDst.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        toDst.image = out.image;
-        toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        auto barrier = [&](uint32_t mip, VkImageLayout oldL, VkImageLayout newL,
+                           VkPipelineStageFlags2 srcS, VkAccessFlags2 srcA,
+                           VkPipelineStageFlags2 dstS, VkAccessFlags2 dstA) {
+            VkImageMemoryBarrier2 b{};
+            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            b.srcStageMask = srcS; b.srcAccessMask = srcA;
+            b.dstStageMask = dstS; b.dstAccessMask = dstA;
+            b.oldLayout = oldL; b.newLayout = newL;
+            b.image = out.image;
+            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1};
+            VkDependencyInfo dep{};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cmd, &dep);
+        };
 
-        VkDependencyInfo dep{};
-        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers = &toDst;
-        vkCmdPipelineBarrier2(cmd, &dep);
-
+        // Mip 0: upload from staging.
+        barrier(0, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
         VkBufferImageCopy copy{};
         copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
         vkCmdCopyBufferToImage(cmd, staging.buffer, out.image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
-        VkImageMemoryBarrier2 toRead{};
-        toRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        toRead.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-        toRead.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        toRead.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        toRead.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        toRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        toRead.image = out.image;
-        toRead.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        // Generate the mip chain by blitting each level down to the next.
+        int32_t mw = w, mh = h;
+        for (uint32_t i = 1; i < mipLevels; i++) {
+            // Source mip (i-1): DST -> SRC.
+            barrier(i - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 
-        VkDependencyInfo dep2{};
-        dep2.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep2.imageMemoryBarrierCount = 1;
-        dep2.pImageMemoryBarriers = &toRead;
-        vkCmdPipelineBarrier2(cmd, &dep2);
+            int32_t nw = mw > 1 ? mw / 2 : 1;
+            int32_t nh = mh > 1 ? mh / 2 : 1;
+            VkImageBlit blit{};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
+            blit.srcOffsets[1] = {mw, mh, 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
+            blit.dstOffsets[1] = {nw, nh, 1};
+            vkCmdBlitImage(cmd, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &blit, VK_FILTER_LINEAR);
+
+            // Source mip (i-1) is done: SRC -> SHADER_READ.
+            barrier(i - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            mw = nw; mh = nh;
+        }
+        // Last mip is still DST -> SHADER_READ.
+        barrier(mipLevels - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     });
 
     destroyBuffer(alloc, staging);
@@ -81,7 +108,7 @@ Image createTextureImage(VulkanEngine& eng, const unsigned char* rgba, int w, in
     vci.image = out.image;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vci.format = format;
-    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
     VK_CHECK(vkCreateImageView(device, &vci, nullptr, &out.view));
 
     return out;

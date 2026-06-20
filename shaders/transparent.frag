@@ -7,6 +7,7 @@
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUV;
+layout(location = 3) in vec4 vTangent;
 layout(location = 0) out vec4 outColor;
 
 struct GpuMaterial {
@@ -55,13 +56,30 @@ void main() {
     }
     roughness = clamp(roughness, 0.04, 1.0);
 
+    // Baked ambient occlusion (glTF occlusion: R). Reuse ORM fetch when shared.
+    float ao = 1.0;
+    if (m.occlusionTexture >= 0) {
+        float occ = (m.occlusionTexture == m.metalRoughTexture)
+            ? texture(textures[nonuniformEXT(m.metalRoughTexture)], vUV).r
+            : texture(textures[nonuniformEXT(m.occlusionTexture)],  vUV).r;
+        ao = mix(1.0, occ, m.occlusionStrength);
+    }
+
     vec3 N = normalize(vNormal);
+    // Tangent-space normal mapping (vertex tangent; .w = handedness).
+    if (m.normalTexture >= 0) {
+        vec3 T = normalize(vTangent.xyz - N * dot(N, vTangent.xyz));
+        vec3 B = cross(N, T) * vTangent.w;
+        vec3 nt = texture(textures[nonuniformEXT(m.normalTexture)], vUV).xyz * 2.0 - 1.0;
+        N = normalize(mat3(T, B, N) * nt);
+    }
+
     vec3 V = normalize(pc.cameraPos.xyz - vWorldPos);
     if (dot(N, V) < 0.0) N = -N;
     vec3 L = normalize(pc.sunDir.xyz);
 
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);
-    color += pc.sunDir.w * albedo; // flat ambient
+    color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO
 
     outColor = vec4(color, opacity);
 }

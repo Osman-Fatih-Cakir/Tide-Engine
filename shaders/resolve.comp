@@ -52,6 +52,17 @@ layout(push_constant) uniform Push {
 
 float cross2(vec2 a, vec2 b) { return a.x * b.y - a.y * b.x; }
 
+// Perspective-correct UV at NDC point p (for analytic texture gradients).
+vec2 perspUV(vec2 p, vec2 s0, vec2 s1, vec2 s2, vec3 invW, float area,
+             vec2 uv0, vec2 uv1, vec2 uv2) {
+    vec3 l = vec3(cross2(s1 - p, s2 - p),
+                  cross2(s2 - p, s0 - p),
+                  cross2(s0 - p, s1 - p)) / area;
+    vec3 pw = l * invW;
+    pw /= (pw.x + pw.y + pw.z);
+    return uv0 * pw.x + uv1 * pw.y + uv2 * pw.z;
+}
+
 void main() {
     ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
     if (pix.x >= int(pc.screenSize.x) || pix.y >= int(pc.screenSize.y)) return;
@@ -102,6 +113,15 @@ void main() {
     vec3 N = normalize(nm * (a0.normal * pw.x + a1.normal * pw.y + a2.normal * pw.z));
     vec2 tuv = a0.uv * pw.x + a1.uv * pw.y + a2.uv * pw.z;
 
+    // Analytic UV gradients (no quad derivatives in compute) → mip selection.
+    vec3 invW = vec3(1.0 / c0.w, 1.0 / c1.w, 1.0 / c2.w);
+    vec2 tuvX = perspUV(p + vec2(2.0 / float(pc.screenSize.x), 0.0),
+                        n0.xy, n1.xy, n2.xy, invW, area, a0.uv, a1.uv, a2.uv);
+    vec2 tuvY = perspUV(p + vec2(0.0, 2.0 / float(pc.screenSize.y)),
+                        n0.xy, n1.xy, n2.xy, invW, area, a0.uv, a1.uv, a2.uv);
+    vec2 dUVdx = tuvX - tuv;
+    vec2 dUVdy = tuvY - tuv;
+
     // Interpolated tangent (glTF vertex tangent; .w = handedness).
     vec4 tan4 = a0.tangent * pw.x + a1.tangent * pw.y + a2.tangent * pw.z;
     vec3 T = normalize(mat3(d.transform) * tan4.xyz);
@@ -110,11 +130,11 @@ void main() {
     GpuMaterial m = materials[d.materialIndex];
     vec3 albedo = m.baseColorFactor.rgb;
     if (m.baseColorTexture >= 0)
-        albedo *= textureLod(textures[nonuniformEXT(m.baseColorTexture)], tuv, 0.0).rgb;
+        albedo *= textureGrad(textures[nonuniformEXT(m.baseColorTexture)], tuv, dUVdx, dUVdy).rgb;
     float metallic  = m.metallicFactor;
     float roughness = m.roughnessFactor;
     if (m.metalRoughTexture >= 0) {
-        vec4 mr = textureLod(textures[nonuniformEXT(m.metalRoughTexture)], tuv, 0.0);
+        vec4 mr = textureGrad(textures[nonuniformEXT(m.metalRoughTexture)], tuv, dUVdx, dUVdy);
         roughness *= mr.g; // glTF: G = roughness
         metallic  *= mr.b; // glTF: B = metallic
     }
@@ -125,8 +145,8 @@ void main() {
     float ao = 1.0;
     if (m.occlusionTexture >= 0) {
         float occ = (m.occlusionTexture == m.metalRoughTexture)
-            ? textureLod(textures[nonuniformEXT(m.metalRoughTexture)], tuv, 0.0).r
-            : textureLod(textures[nonuniformEXT(m.occlusionTexture)],  tuv, 0.0).r;
+            ? textureGrad(textures[nonuniformEXT(m.metalRoughTexture)], tuv, dUVdx, dUVdy).r
+            : textureGrad(textures[nonuniformEXT(m.occlusionTexture)],  tuv, dUVdx, dUVdy).r;
         ao = mix(1.0, occ, m.occlusionStrength);
     }
 
@@ -134,7 +154,7 @@ void main() {
     if (m.normalTexture >= 0) {
         T = normalize(T - N * dot(N, T));
         vec3 B = cross(N, T) * tan4.w;
-        vec3 nt = textureLod(textures[nonuniformEXT(m.normalTexture)], tuv, 0.0).xyz * 2.0 - 1.0;
+        vec3 nt = textureGrad(textures[nonuniformEXT(m.normalTexture)], tuv, dUVdx, dUVdy).xyz * 2.0 - 1.0;
         N = normalize(mat3(T, B, N) * nt);
     }
 

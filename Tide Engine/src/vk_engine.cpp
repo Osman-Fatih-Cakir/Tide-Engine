@@ -320,14 +320,22 @@ void VulkanEngine::createSwapchain() {
     }
     m_swapchainFormat = chosen.format;
 
-    // Present mode: prefer MAILBOX, fall back to FIFO (always available).
+    // Present mode. VSync on -> FIFO (always available). VSync off -> prefer
+    // MAILBOX (low-latency, no tearing), else IMMEDIATE, else FIFO.
     uint32_t pcount = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &pcount, nullptr);
     std::vector<VkPresentModeKHR> modes(pcount);
     vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &pcount, modes.data());
+    auto hasMode = [&](VkPresentModeKHR want) {
+        for (auto m : modes) if (m == want) return true;
+        return false;
+    };
     VkPresentModeKHR present = VK_PRESENT_MODE_FIFO_KHR;
-    for (auto m : modes)
-        if (m == VK_PRESENT_MODE_MAILBOX_KHR) { present = m; break; }
+    if (!m_settings.vsync) {
+        if (hasMode(VK_PRESENT_MODE_MAILBOX_KHR))         present = VK_PRESENT_MODE_MAILBOX_KHR;
+        else if (hasMode(VK_PRESENT_MODE_IMMEDIATE_KHR))  present = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    }
+    m_lastVsync = m_settings.vsync;
 
     // Extent.
     if (caps.currentExtent.width != UINT32_MAX) {
@@ -714,9 +722,10 @@ void VulkanEngine::drawFrame(float dt) {
     present.pImageIndices = &imageIndex;
 
     VkResult pres = vkQueuePresentKHR(m_queue, &present);
-    if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR || m_framebufferResized) {
+    if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR ||
+        m_framebufferResized || m_settings.vsync != m_lastVsync) {
         m_framebufferResized = false;
-        recreateSwapchain();
+        recreateSwapchain(); // also rebuilds with the new present mode on vsync toggle
     } else if (pres != VK_SUCCESS) {
         VK_CHECK(pres);
     }

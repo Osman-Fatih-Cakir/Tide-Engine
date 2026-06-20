@@ -9,6 +9,8 @@ struct Settings {
     float sunIntensity    = 4.0f;  // directional sun radiance multiplier
     float exposure        = 1.0f;  // tonemap exposure
 
+    bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
+
     // Frame-time graph.
     bool  showFrameGraph  = true;
     int   frameGraphHz    = 10;     // samples per second fed to the graph

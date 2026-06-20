@@ -106,6 +106,8 @@ void Ui::buildPanel(Settings& s, float dt) {
     ImGui::Text("Max: %.2f ms  (%.0f FPS)", m_dispMaxMs, maxFps);
     ImGui::SetItemTooltip("Slowest frame in the last second (worst-case).");
 
+    ImGui::Checkbox("VSync", &s.vsync);
+    ImGui::SetItemTooltip("On: FIFO (no tearing). Off: MAILBOX/IMMEDIATE (uncapped).");
     ImGui::Checkbox("Frame graph", &s.showFrameGraph);
     ImGui::SetNextItemWidth(150.0f);
     ImGui::SliderInt("Graph Hz", &s.frameGraphHz, 1, 60);

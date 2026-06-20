@@ -64,6 +64,7 @@ private:
     uint32_t    m_width            = 1600;
     uint32_t    m_height           = 900;
     bool        m_framebufferResized = false;
+    bool        m_lastVsync          = true;  // tracks present-mode changes from UI
 
     // --- core ---
     VkInstance               m_instance       = VK_NULL_HANDLE;
