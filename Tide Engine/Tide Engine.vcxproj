@@ -159,7 +159,14 @@
     <ClCompile Include="src\camera.cpp" />
     <ClCompile Include="src\shader.cpp" />
     <ClCompile Include="src\pipeline.cpp" />
+    <ClCompile Include="src\ui.cpp" />
     <ClCompile Include="..\Dependency\tracy\public\TracyClient.cpp" />
+    <ClCompile Include="..\Dependency\imgui\imgui.cpp" />
+    <ClCompile Include="..\Dependency\imgui\imgui_draw.cpp" />
+    <ClCompile Include="..\Dependency\imgui\imgui_tables.cpp" />
+    <ClCompile Include="..\Dependency\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="..\Dependency\imgui\backends\imgui_impl_glfw.cpp" />
+    <ClCompile Include="..\Dependency\imgui\backends\imgui_impl_vulkan.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\pch.h" />
@@ -172,6 +179,8 @@
     <ClInclude Include="src\camera.h" />
     <ClInclude Include="src\shader.h" />
     <ClInclude Include="src\pipeline.h" />
+    <ClInclude Include="src\ui.h" />
+    <ClInclude Include="src\settings.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\shaders\mesh.vert" />

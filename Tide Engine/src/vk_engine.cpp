@@ -15,6 +15,7 @@ static constexpr bool kEnableValidation = false;
 // need no extra device setup.
 static const char* kDeviceExtensions[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, // core in 1.3, but ImGui backend wants it explicit
     VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
     VK_KHR_RAY_QUERY_EXTENSION_NAME,
     VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
@@ -67,12 +68,12 @@ void VulkanEngine::init() {
     if (m_scene.setLayout)
         m_meshPipeline = createMeshPipeline(m_device, m_swapchainFormat, m_depthFormat,
                                             m_scene.setLayout);
+    m_ui.init(*this, m_swapchainFormat, 2, (uint32_t)m_swapchainImages.size());
 }
 
 void VulkanEngine::run() {
     using clock = std::chrono::high_resolution_clock;
     auto last = clock::now();
-    double titleAccum = 0.0;
 
     while (!glfwWindowShouldClose(m_window)) {
         auto now = clock::now();
@@ -81,16 +82,8 @@ void VulkanEngine::run() {
 
         glfwPollEvents();
         m_camera.update(m_window, (float)dt);
-        drawFrame();
+        drawFrame((float)dt);
 
-        titleAccum += dt;
-        if (titleAccum > 0.25) {
-            char title[128];
-            std::snprintf(title, sizeof(title), "Tide Engine  |  %.2f ms  |  %.0f FPS",
-                          dt * 1000.0, dt > 0.0 ? 1.0 / dt : 0.0);
-            glfwSetWindowTitle(m_window, title);
-            titleAccum = 0.0;
-        }
         FrameMark; // Tracy CPU frame boundary
     }
     vkDeviceWaitIdle(m_device);
@@ -109,6 +102,14 @@ void VulkanEngine::initWindow() {
     if (!m_window) {
         TE_ERROR("glfwCreateWindow failed\n");
         std::abort();
+    }
+    // Center the window on the primary monitor.
+    if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) {
+        const GLFWvidmode* mode = glfwGetVideoMode(mon);
+        if (mode)
+            glfwSetWindowPos(m_window,
+                             (mode->width - (int)m_width) / 2,
+                             (mode->height - (int)m_height) / 2);
     }
     glfwSetWindowUserPointer(m_window, this);
     glfwSetFramebufferSizeCallback(m_window, [](GLFWwindow* w, int, int) {
@@ -547,7 +548,8 @@ void VulkanEngine::loadScene() {
     glm::vec3 center = 0.5f * (data.boundsMin + data.boundsMax);
     float radius = glm::length(data.boundsMax - data.boundsMin) * 0.5f;
     if (radius <= 0.0f) radius = 1.0f;
-    m_camera.setLookAt(center + glm::vec3(0.0f, radius * 0.3f, radius * 1.5f), center);
+    // Start from a corner, a bit above center, and closer in.
+    m_camera.setLookAt(center + glm::vec3(radius * 0.6f, radius * 0.45f, radius * 0.6f), center);
     m_camera.farZ = radius * 10.0f + 10.0f;
     m_camera.speed = radius * 0.5f;
     TE_INFO("Scene bounds center=(%.2f,%.2f,%.2f) radius=%.2f\n",
@@ -601,7 +603,7 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
         color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color.clearValue.color = {{0.02f, 0.04f, 0.10f, 1.0f}};
+        color.clearValue.color = {{0.005f, 0.005f, 0.012f, 1.0f}};
 
         VkRenderingAttachmentInfo depth{};
         depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -645,10 +647,12 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
             vkCmdBindVertexBuffers(cmd, 0, 1, &m_scene.vertexBuffer.buffer, &offset);
             vkCmdBindIndexBuffer(cmd, m_scene.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
+            glm::vec3 sun = sunDirection(m_settings);
             for (const MeshDraw& d : m_scene.draws) {
                 MeshPush push{};
                 push.viewProj = viewProj;
                 push.model = d.transform;
+                push.sunDir = glm::vec4(sun, m_settings.ambient);
                 push.materialIndex = d.materialIndex;
                 vkCmdPushConstants(cmd, m_meshPipeline.layout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -657,6 +661,25 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
             }
         }
 
+        vkCmdEndRendering(cmd);
+
+        // --- ImGui pass (load existing color, no depth) ---
+        VkRenderingAttachmentInfo uiColor{};
+        uiColor.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        uiColor.imageView = m_swapchainImageViews[imageIndex];
+        uiColor.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        uiColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        uiColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+        VkRenderingInfo uiRi{};
+        uiRi.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        uiRi.renderArea.extent = m_swapchainExtent;
+        uiRi.layerCount = 1;
+        uiRi.colorAttachmentCount = 1;
+        uiRi.pColorAttachments = &uiColor;
+
+        vkCmdBeginRendering(cmd, &uiRi);
+        m_ui.render(cmd);
         vkCmdEndRendering(cmd);
 
         // COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC
@@ -685,7 +708,7 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
     VK_CHECK(vkEndCommandBuffer(cmd));
 }
 
-void VulkanEngine::drawFrame() {
+void VulkanEngine::drawFrame(float dt) {
     ZoneScoped; // Tracy CPU zone
 
     FrameData& frame = m_frames[m_currentFrame];
@@ -700,6 +723,10 @@ void VulkanEngine::drawFrame() {
         return;
     }
     if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) VK_CHECK(acq);
+
+    // Build the UI only once we know we'll render this frame.
+    m_ui.beginFrame();
+    m_ui.buildPanel(m_settings, dt);
 
     VK_CHECK(vkResetFences(m_device, 1, &frame.inFlight));
     VK_CHECK(vkResetCommandPool(m_device, frame.pool, 0));
@@ -765,6 +792,7 @@ void VulkanEngine::setDebugName(uint64_t handle, VkObjectType type, const char* 
 }
 
 void VulkanEngine::cleanup() {
+    m_ui.destroy();
 #ifdef GPU_PROFILE
     if (m_tracyCtx) TracyVkDestroy(m_tracyCtx);
 #endif

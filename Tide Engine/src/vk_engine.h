@@ -3,6 +3,8 @@
 #include "scene.h"
 #include "camera.h"
 #include "pipeline.h"
+#include "ui.h"
+#include "settings.h"
 
 // Number of frames the CPU may work ahead of the GPU.
 inline constexpr uint32_t FRAMES_IN_FLIGHT = 2;
@@ -24,8 +26,13 @@ public:
     void cleanup();
 
     // --- accessors / utilities used by uploaders (Scene, etc.) ---
-    VkDevice     device() const { return m_device; }
-    VmaAllocator allocator() const { return m_allocator; }
+    VkDevice         device() const { return m_device; }
+    VmaAllocator     allocator() const { return m_allocator; }
+    VkInstance       instance() const { return m_instance; }
+    VkPhysicalDevice physicalDevice() const { return m_physicalDevice; }
+    uint32_t         queueFamily() const { return m_queueFamily; }
+    VkQueue          queue() const { return m_queue; }
+    GLFWwindow*      window() const { return m_window; }
     // Run GPU work synchronously (staging copies, etc.).
     void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
     void setDebugName(uint64_t handle, VkObjectType type, const char* name);
@@ -49,13 +56,13 @@ private:
     void loadScene();
 
     // --- per-frame ---
-    void drawFrame();
+    void drawFrame(float dt);
     void recordCommands(VkCommandBuffer cmd, uint32_t imageIndex);
 
     // --- window ---
     GLFWwindow* m_window           = nullptr;
-    uint32_t    m_width            = 1280;
-    uint32_t    m_height           = 720;
+    uint32_t    m_width            = 1600;
+    uint32_t    m_height           = 900;
     bool        m_framebufferResized = false;
 
     // --- core ---
@@ -98,6 +105,10 @@ private:
     // --- forward pass + camera (temporary; replaced by V-buffer in Faz 4) ---
     GraphicsPipeline m_meshPipeline;
     Camera           m_camera;
+
+    // --- debug UI + tunables ---
+    Ui       m_ui;
+    Settings m_settings;
 
     // --- profiling ---
     TracyVkCtx m_tracyCtx = nullptr;

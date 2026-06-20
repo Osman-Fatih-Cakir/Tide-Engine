@@ -27,6 +27,7 @@ layout(set = 0, binding = 1) uniform sampler2D textures[];
 layout(push_constant) uniform Push {
     mat4 viewProj;
     mat4 model;
+    vec4 sunDir;        // xyz = direction to sun, w = ambient
     uint materialIndex;
 } pc;
 
@@ -38,7 +39,7 @@ void main() {
         albedo *= texture(textures[m.baseColorTexture], vUV).rgb;
 
     vec3 N = normalize(vNormal);
-    vec3 L = normalize(vec3(0.5, 1.0, 0.3));
-    float diff = max(dot(N, L), 0.0) * 0.8 + 0.2;
+    vec3 L = normalize(pc.sunDir.xyz);
+    float diff = max(dot(N, L), 0.0) * (1.0 - pc.sunDir.w) + pc.sunDir.w;
     outColor = vec4(albedo * diff, 1.0);
 }

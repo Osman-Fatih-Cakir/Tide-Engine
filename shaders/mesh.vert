@@ -7,6 +7,7 @@ layout(location = 2) in vec2 inUV;
 layout(push_constant) uniform Push {
     mat4 viewProj;
     mat4 model;
+    vec4 sunDir;
     uint materialIndex;
 } pc;
 

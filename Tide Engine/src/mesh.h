@@ -24,10 +24,11 @@ struct GpuMaterial {
 };
 
 // Push constant for the simple forward pass.
-// 144 bytes — within RTX 3070's 256-byte limit (target HW; not the 128 minimum).
+// 160 bytes — within RTX 3070's 256-byte limit (target HW; not the 128 minimum).
 struct MeshPush {
     glm::mat4 viewProj;
     glm::mat4 model;
+    glm::vec4 sunDir;        // xyz = direction to sun, w = ambient
     uint32_t  materialIndex;
     uint32_t  _pad[3];
 };
