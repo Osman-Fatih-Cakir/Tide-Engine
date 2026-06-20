@@ -472,10 +472,9 @@ void VulkanEngine::initFrames() {
 // Profiler
 // ===========================================================================
 void VulkanEngine::initProfiler() {
-#ifdef GPU_PROFILE
     // Tracy manages the command buffer fully (begin/submit/wait) during init.
+    // No-op (returns nullptr) when TRACY_ENABLE is not defined.
     m_tracyCtx = TracyVkContext(m_physicalDevice, m_device, m_queue, m_frames[0].cmd);
-#endif
 }
 
 // ===========================================================================
@@ -701,9 +700,7 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
         vkCmdPipelineBarrier2(cmd, &dep2);
     }
 
-#ifdef GPU_PROFILE
-    TracyVkCollect(m_tracyCtx, cmd);
-#endif
+    TracyVkCollect(m_tracyCtx, cmd); // no-op without TRACY_ENABLE
 
     VK_CHECK(vkEndCommandBuffer(cmd));
 }
@@ -793,9 +790,7 @@ void VulkanEngine::setDebugName(uint64_t handle, VkObjectType type, const char* 
 
 void VulkanEngine::cleanup() {
     m_ui.destroy();
-#ifdef GPU_PROFILE
-    if (m_tracyCtx) TracyVkDestroy(m_tracyCtx);
-#endif
+    if (m_tracyCtx) TracyVkDestroy(m_tracyCtx); // no-op without TRACY_ENABLE
     for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyFence(m_device, m_frames[i].inFlight, nullptr);
         vkDestroySemaphore(m_device, m_frames[i].imageAvailable, nullptr);
