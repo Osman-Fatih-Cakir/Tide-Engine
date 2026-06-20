@@ -2,10 +2,12 @@
 #include "gpu_buffer.h"
 #include "vk_engine.h"
 
-Image createTextureImage(VulkanEngine& eng, const unsigned char* rgba, int w, int h) {
+Image createTextureImage(VulkanEngine& eng, const unsigned char* rgba, int w, int h,
+                         bool srgb) {
     VmaAllocator alloc = eng.allocator();
     VkDevice device = eng.device();
     VkDeviceSize size = (VkDeviceSize)w * h * 4;
+    const VkFormat format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 
     // Staging.
     Buffer staging = createBuffer(alloc, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -19,7 +21,7 @@ Image createTextureImage(VulkanEngine& eng, const unsigned char* rgba, int w, in
     VkImageCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType = VK_IMAGE_TYPE_2D;
-    ici.format = VK_FORMAT_R8G8B8A8_SRGB;
+    ici.format = format;
     ici.extent = {(uint32_t)w, (uint32_t)h, 1};
     ici.mipLevels = 1;
     ici.arrayLayers = 1;
@@ -78,7 +80,7 @@ Image createTextureImage(VulkanEngine& eng, const unsigned char* rgba, int w, in
     vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     vci.image = out.image;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = VK_FORMAT_R8G8B8A8_SRGB;
+    vci.format = format;
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VK_CHECK(vkCreateImageView(device, &vci, nullptr, &out.view));
 

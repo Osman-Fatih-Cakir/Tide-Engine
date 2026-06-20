@@ -2,25 +2,30 @@
 #include "pch.h"
 #include <limits>
 
-// Interleaved vertex. Tangent comes later (Faz 6/7 normal mapping).
+// Interleaved vertex. Tangent comes from the glTF (Blender export); .w = handedness.
 struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
     glm::vec2 uv;
+    glm::vec4 tangent = glm::vec4(1, 0, 0, 1);
 };
 
 // Material as it will live in the bindless SSBO. Texture fields are indices into
-// the bindless texture array (-1 = none). std430-friendly layout.
+// the bindless texture array (-1 = none). 16-byte aligned (scalar/std430 in GLSL).
 struct GpuMaterial {
     glm::vec4 baseColorFactor = glm::vec4(1.0f);
-    int   baseColorTexture = -1;
-    int   normalTexture    = -1;
+    int   baseColorTexture  = -1;
+    int   normalTexture     = -1;
     int   metalRoughTexture = -1;
-    float metallicFactor   = 1.0f;
-    float roughnessFactor  = 1.0f;
-    int   alphaMode   = 0;     // 0 = OPAQUE, 1 = MASK, 2 = BLEND
-    float alphaCutoff = 0.5f;
-    int   _pad = 0;
+    int   occlusionTexture  = -1;   // glTF occlusion (R channel = AO)
+    float metallicFactor    = 1.0f;
+    float roughnessFactor   = 1.0f;
+    float occlusionStrength = 1.0f;
+    float alphaCutoff       = 0.5f;
+    int   alphaMode = 0;            // 0 = OPAQUE, 1 = MASK, 2 = BLEND
+    int   _pad0 = 0;
+    int   _pad1 = 0;
+    int   _pad2 = 0;
 };
 
 // glTF alpha modes (matches GpuMaterial::alphaMode).

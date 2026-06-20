@@ -15,37 +15,107 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\main.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\vk_engine.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\vma_impl.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\gltf_impl.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\gltf_loader.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\scene.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\gpu_image.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\camera.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\shader.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\renderer.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="src\ui.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="..\Dependency\tracy\public\TracyClient.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="..\Dependency\imgui\imgui.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="..\Dependency\imgui\imgui_draw.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="..\Dependency\imgui\imgui_tables.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="..\Dependency\imgui\imgui_widgets.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="..\Dependency\imgui\backends\imgui_impl_glfw.cpp"><Filter>Source Files</Filter></ClCompile>
-    <ClCompile Include="..\Dependency\imgui\backends\imgui_impl_vulkan.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\vk_engine.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\vma_impl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gltf_impl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gltf_loader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\scene.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gpu_image.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\camera.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\shader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\renderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ui.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Dependency\tracy\public\TracyClient.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Dependency\imgui\imgui.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Dependency\imgui\imgui_draw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Dependency\imgui\imgui_tables.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Dependency\imgui\imgui_widgets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Dependency\imgui\backends\imgui_impl_glfw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\Dependency\imgui\backends\imgui_impl_vulkan.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="src\pch.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\vk_engine.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\gpu_buffer.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\gpu_image.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\mesh.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\gltf_loader.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\scene.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\camera.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\shader.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\renderer.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\ui.h"><Filter>Header Files</Filter></ClInclude>
-    <ClInclude Include="src\settings.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\pch.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\vk_engine.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gpu_buffer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gpu_image.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\mesh.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gltf_loader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\scene.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\camera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\renderer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ui.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\settings.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\shaders\vis.vert" />
+    <None Include="..\shaders\vis.frag" />
+    <None Include="..\shaders\resolve.comp" />
+    <None Include="..\shaders\fullscreen.vert" />
+    <None Include="..\shaders\tonemap.frag" />
+    <None Include="..\shaders\transparent.vert" />
+    <None Include="..\shaders\transparent.frag" />
+    <None Include="..\shaders\pbr.glsl" />
   </ItemGroup>
 </Project>

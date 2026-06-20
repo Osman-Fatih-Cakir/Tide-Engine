@@ -13,13 +13,17 @@ struct GpuMaterial {
     int   baseColorTexture;
     int   normalTexture;
     int   metalRoughTexture;
+    int   occlusionTexture;
     float metallicFactor;
     float roughnessFactor;
-    int   alphaMode;
+    float occlusionStrength;
     float alphaCutoff;
-    int   pad;
+    int   alphaMode;
+    int   pad0;
+    int   pad1;
+    int   pad2;
 };
-struct Vertex { vec3 position; vec3 normal; vec2 uv; };
+struct Vertex { vec3 position; vec3 normal; vec2 uv; vec4 tangent; };
 struct GpuDraw {
     mat4 transform;
     uint firstIndex;
@@ -98,6 +102,10 @@ void main() {
     vec3 N = normalize(nm * (a0.normal * pw.x + a1.normal * pw.y + a2.normal * pw.z));
     vec2 tuv = a0.uv * pw.x + a1.uv * pw.y + a2.uv * pw.z;
 
+    // Interpolated tangent (glTF vertex tangent; .w = handedness).
+    vec4 tan4 = a0.tangent * pw.x + a1.tangent * pw.y + a2.tangent * pw.z;
+    vec3 T = normalize(mat3(d.transform) * tan4.xyz);
+
     // Material.
     GpuMaterial m = materials[d.materialIndex];
     vec3 albedo = m.baseColorFactor.rgb;
@@ -112,13 +120,31 @@ void main() {
     }
     roughness = clamp(roughness, 0.04, 1.0);
 
+    // Baked ambient occlusion (glTF occlusion: R channel). Reuse the metalRough
+    // fetch when the occlusion map is the same packed ORM image.
+    float ao = 1.0;
+    if (m.occlusionTexture >= 0) {
+        float occ = (m.occlusionTexture == m.metalRoughTexture)
+            ? textureLod(textures[nonuniformEXT(m.metalRoughTexture)], tuv, 0.0).r
+            : textureLod(textures[nonuniformEXT(m.occlusionTexture)],  tuv, 0.0).r;
+        ao = mix(1.0, occ, m.occlusionStrength);
+    }
+
+    // Tangent-space normal mapping. Gram-Schmidt re-orthonormalize against N.
+    if (m.normalTexture >= 0) {
+        T = normalize(T - N * dot(N, T));
+        vec3 B = cross(N, T) * tan4.w;
+        vec3 nt = textureLod(textures[nonuniformEXT(m.normalTexture)], tuv, 0.0).xyz * 2.0 - 1.0;
+        N = normalize(mat3(T, B, N) * nt);
+    }
+
     // Two-sided: face the normal toward the viewer.
     vec3 V = normalize(pc.cameraPos.xyz - worldPos);
     if (dot(N, V) < 0.0) N = -N;
     vec3 L = normalize(pc.sunDir.xyz);
 
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);
-    color += pc.sunDir.w * albedo; // flat ambient (real GI comes in Faz 7)
+    color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO (real GI in Faz 7)
 
     imageStore(hdrImage, pix, vec4(color, 1.0));
 }

@@ -73,13 +73,14 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <IncludePath>$(VULKAN_SDK)\Include;$(SolutionDir)Dependency\glfw\include;$(SolutionDir)Dependency\imgui;$(SolutionDir)Dependency\imgui\backends;$(SolutionDir)Dependency\tinygltf;$(SolutionDir)Dependency\tracy\public;$(SolutionDir)Dependency\glm;$(SolutionDir)Dependency\stb;$(IncludePath)</IncludePath>
     <LibraryPath>$(VULKAN_SDK)\Lib;$(SolutionDir)Dependency\glfw\build\src\Debug;$(LibraryPath)</LibraryPath>
-    <OutDir>$(SolutionDir)\Bin</OutDir>
-    <TargetName>$(ProjectName)d</TargetName>
+    <OutDir>$(SolutionDir)\Bin\</OutDir>
+    <TargetName>TideEngined</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <IncludePath>$(VULKAN_SDK)\Include;$(SolutionDir)Dependency\glfw\include;$(SolutionDir)Dependency\imgui;$(SolutionDir)Dependency\imgui\backends;$(SolutionDir)Dependency\tinygltf;$(SolutionDir)Dependency\tracy\public;$(SolutionDir)Dependency\glm;$(SolutionDir)Dependency\stb;$(IncludePath)</IncludePath>
     <LibraryPath>$(VULKAN_SDK)\Lib;$(SolutionDir)Dependency\glfw\build\src\Release;$(LibraryPath)</LibraryPath>
-    <OutDir>$(SolutionDir)\Bin</OutDir>
+    <OutDir>$(SolutionDir)\Bin\</OutDir>
+    <TargetName>TideEngine</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>

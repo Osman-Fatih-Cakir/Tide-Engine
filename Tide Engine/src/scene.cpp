@@ -92,12 +92,19 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
 void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data) {
     VkDevice device = eng.device();
 
-    // Upload all textures.
+    // Upload all textures. Color data (baseColor) is sRGB; everything else
+    // (normal / ORM / metalRough) is linear. Decide per image from material usage.
     textureCount = (uint32_t)data.textures.size();
+    std::vector<bool> srgb(textureCount, false);
+    for (const auto& m : data.materials)
+        if (m.baseColorTexture >= 0 && m.baseColorTexture < (int)textureCount)
+            srgb[m.baseColorTexture] = true;
+
     textures.reserve(textureCount);
-    for (const auto& td : data.textures) {
+    for (uint32_t i = 0; i < textureCount; i++) {
+        const auto& td = data.textures[i];
         if (td.width <= 0 || td.height <= 0) { textures.push_back(Image{}); continue; }
-        textures.push_back(createTextureImage(eng, td.rgba.data(), td.width, td.height));
+        textures.push_back(createTextureImage(eng, td.rgba.data(), td.width, td.height, srgb[i]));
     }
 
     // One sampler for everything.

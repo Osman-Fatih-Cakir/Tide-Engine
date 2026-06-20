@@ -59,6 +59,11 @@ static void addPrimitive(const tinygltf::Model& model,
     if (itUV != prim.attributes.end())
         uvBase = accessorPtr(model, model.accessors[itUV->second], uvStride);
 
+    const unsigned char* tanBase = nullptr; size_t tanStride = 0;
+    auto itT = prim.attributes.find("TANGENT");
+    if (itT != prim.attributes.end())
+        tanBase = accessorPtr(model, model.accessors[itT->second], tanStride);
+
     uint32_t baseVertex = (uint32_t)out.vertices.size();
     out.vertices.reserve(out.vertices.size() + posAcc.count);
     for (size_t i = 0; i < posAcc.count; i++) {
@@ -75,6 +80,10 @@ static void addPrimitive(const tinygltf::Model& model,
         if (uvBase) {
             const float* uv = (const float*)(uvBase + i * uvStride);
             v.uv = glm::vec2(uv[0], uv[1]);
+        }
+        if (tanBase) {
+            const float* t = (const float*)(tanBase + i * tanStride);
+            v.tangent = glm::vec4(t[0], t[1], t[2], t[3]); // glTF: xyz dir, w handedness
         }
         out.vertices.push_back(v);
     }
@@ -148,6 +157,8 @@ bool loadGltf(const char* path, MeshData& out) {
             gm.baseColorTexture  = srcImage(pbr.baseColorTexture.index);
             gm.metalRoughTexture = srcImage(pbr.metallicRoughnessTexture.index);
             gm.normalTexture     = srcImage(m.normalTexture.index);
+            gm.occlusionTexture  = srcImage(m.occlusionTexture.index);
+            gm.occlusionStrength = (float)m.occlusionTexture.strength;
             // Alpha mode: OPAQUE (default) / MASK / BLEND.
             if (m.alphaMode == "BLEND")     gm.alphaMode = ALPHA_BLEND;
             else if (m.alphaMode == "MASK") gm.alphaMode = ALPHA_MASK;

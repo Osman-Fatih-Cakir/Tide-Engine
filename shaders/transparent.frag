@@ -14,11 +14,15 @@ struct GpuMaterial {
     int   baseColorTexture;
     int   normalTexture;
     int   metalRoughTexture;
+    int   occlusionTexture;
     float metallicFactor;
     float roughnessFactor;
-    int   alphaMode;
+    float occlusionStrength;
     float alphaCutoff;
-    int   pad;
+    int   alphaMode;
+    int   pad0;
+    int   pad1;
+    int   pad2;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Materials { GpuMaterial materials[]; };
