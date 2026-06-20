@@ -15,8 +15,8 @@ struct FrameData {
     VkFence         inFlight       = VK_NULL_HANDLE;
 };
 
-// The whole engine. Phase 1: window + context + swapchain + clear + profiling.
-// Hardcoded on purpose; no abstraction layers.
+// The whole engine: window, Vulkan context, swapchain, scene, and the (temporary)
+// forward pass. Hardcoded on purpose; no abstraction layers.
 class VulkanEngine {
 public:
     void init();
@@ -95,10 +95,9 @@ private:
     VkImageView   m_depthView  = VK_NULL_HANDLE;
     VkFormat      m_depthFormat = VK_FORMAT_D32_SFLOAT;
 
-    // --- forward pass + camera ---
+    // --- forward pass + camera (temporary; replaced by V-buffer in Faz 4) ---
     GraphicsPipeline m_meshPipeline;
     Camera           m_camera;
-    float            m_dt = 0.0f;
 
     // --- profiling ---
     TracyVkCtx m_tracyCtx = nullptr;

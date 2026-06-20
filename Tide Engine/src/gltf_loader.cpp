@@ -140,7 +140,7 @@ bool loadGltf(const char* path, MeshData& out) {
                                                pbr.baseColorFactor[2], pbr.baseColorFactor[3]);
             gm.metallicFactor  = (float)pbr.metallicFactor;
             gm.roughnessFactor = (float)pbr.roughnessFactor;
-            // Store the source IMAGE index for bindless (resolved/decoded in Faz 2B).
+            // Store the source IMAGE index; matches the bindless texture array slot.
             auto srcImage = [&](int texIdx) -> int {
                 if (texIdx < 0) return -1;
                 return model.textures[texIdx].source;
@@ -181,6 +181,5 @@ bool loadGltf(const char* path, MeshData& out) {
         out.textures.push_back(std::move(td));
     }
 
-    out.imageCount = (uint32_t)model.images.size();
     return true;
 }

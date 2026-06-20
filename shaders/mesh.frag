@@ -1,4 +1,6 @@
 #version 450
+// Required to index an unbounded descriptor array with a variable index,
+// even when that index is dynamically uniform.
 #extension GL_EXT_nonuniform_qualifier : require
 
 layout(location = 0) in vec3 vNormal;
@@ -31,8 +33,9 @@ layout(push_constant) uniform Push {
 void main() {
     GpuMaterial m = materials[pc.materialIndex];
     vec3 albedo = m.baseColorFactor.rgb;
+    // Index is dynamically uniform (from a push constant), so no nonuniformEXT wrap.
     if (m.baseColorTexture >= 0)
-        albedo *= texture(textures[nonuniformEXT(m.baseColorTexture)], vUV).rgb;
+        albedo *= texture(textures[m.baseColorTexture], vUV).rgb;
 
     vec3 N = normalize(vNormal);
     vec3 L = normalize(vec3(0.5, 1.0, 0.3));

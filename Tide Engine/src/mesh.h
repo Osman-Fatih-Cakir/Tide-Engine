@@ -55,7 +55,6 @@ struct MeshData {
     std::vector<GpuMaterial> materials;
     std::vector<MeshDraw>    draws;
     std::vector<TextureData> textures;   // indexed by glTF image source index
-    uint32_t                 imageCount = 0;
 
     // World-space AABB (for auto camera placement).
     glm::vec3 boundsMin = glm::vec3( std::numeric_limits<float>::max());

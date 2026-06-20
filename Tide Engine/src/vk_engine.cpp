@@ -527,21 +527,18 @@ void VulkanEngine::immediateSubmit(const std::function<void(VkCommandBuffer)>& f
 // Scene load
 // ===========================================================================
 void VulkanEngine::loadScene() {
-    // Path is relative to the working directory. Try candidates so it runs whether
-    // the cwd is the Bin output dir or the solution dir.
-    static const char* kCandidates[] = {
-        "../Resources/nowindows/Room_NoWindows.gltf",
-        "Resources/nowindows/Room_NoWindows.gltf",
-        "../../Resources/nowindows/Room_NoWindows.gltf",
+    const char* path = {
+        "../Resources/small/Room_Small.gltf",
     };
 
     MeshData data;
     bool loaded = false;
-    for (const char* path : kCandidates) {
-        if (loadGltf(path, data)) { TE_INFO("Loaded scene: %s\n", path); loaded = true; break; }
+    if (loadGltf(path, data)) {
+      TE_INFO("Loaded scene: %s\n", path);
+      loaded = true;
     }
     if (!loaded) {
-        TE_ERROR("glTF load failed (all candidate paths); continuing with empty scene.\n");
+        TE_ERROR("glTF load failed; continuing with empty scene.\n");
         return;
     }
     m_scene.build(*this, data);
