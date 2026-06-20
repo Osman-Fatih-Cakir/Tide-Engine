@@ -23,10 +23,20 @@ struct GpuMaterial {
     int   _pad2 = 0;
 };
 
-// Push constant for the simple forward pass (128 bytes = guaranteed minimum).
+// Push constant for the simple forward pass.
+// 144 bytes — within RTX 3070's 256-byte limit (target HW; not the 128 minimum).
 struct MeshPush {
     glm::mat4 viewProj;
     glm::mat4 model;
+    uint32_t  materialIndex;
+    uint32_t  _pad[3];
+};
+
+// Decoded texture (RGBA8) ready for GPU upload.
+struct TextureData {
+    int width = 0;
+    int height = 0;
+    std::vector<unsigned char> rgba;
 };
 
 // One drawable primitive: a slice of the shared index buffer + its material.
@@ -44,7 +54,8 @@ struct MeshData {
     std::vector<uint32_t>    indices;
     std::vector<GpuMaterial> materials;
     std::vector<MeshDraw>    draws;
-    uint32_t                 imageCount = 0; // textures referenced (decoded in Faz 2B)
+    std::vector<TextureData> textures;   // indexed by glTF image source index
+    uint32_t                 imageCount = 0;
 
     // World-space AABB (for auto camera placement).
     glm::vec3 boundsMin = glm::vec3( std::numeric_limits<float>::max());

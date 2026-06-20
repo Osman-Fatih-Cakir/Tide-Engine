@@ -155,6 +155,7 @@
     <ClCompile Include="src\gltf_impl.cpp" />
     <ClCompile Include="src\gltf_loader.cpp" />
     <ClCompile Include="src\scene.cpp" />
+    <ClCompile Include="src\gpu_image.cpp" />
     <ClCompile Include="src\camera.cpp" />
     <ClCompile Include="src\shader.cpp" />
     <ClCompile Include="src\pipeline.cpp" />
@@ -164,6 +165,7 @@
     <ClInclude Include="src\pch.h" />
     <ClInclude Include="src\vk_engine.h" />
     <ClInclude Include="src\gpu_buffer.h" />
+    <ClInclude Include="src\gpu_image.h" />
     <ClInclude Include="src\mesh.h" />
     <ClInclude Include="src\gltf_loader.h" />
     <ClInclude Include="src\scene.h" />

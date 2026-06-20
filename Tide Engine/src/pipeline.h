@@ -9,6 +9,7 @@ struct GraphicsPipeline {
 // Simple forward mesh pipeline (dynamic rendering). Vertex layout = Vertex,
 // push constant = MeshPush. Faz 4 will replace this with the V-buffer path.
 GraphicsPipeline createMeshPipeline(VkDevice device, VkFormat colorFormat,
-                                    VkFormat depthFormat);
+                                    VkFormat depthFormat,
+                                    VkDescriptorSetLayout setLayout);
 
 void destroyPipeline(VkDevice device, GraphicsPipeline& p);

@@ -163,6 +163,24 @@ bool loadGltf(const char* path, MeshData& out) {
             processNode(model, i, glm::mat4(1.0f), out);
     }
 
+    // Textures: tinygltf already decoded images into model.images. Convert to RGBA8.
+    out.textures.reserve(model.images.size());
+    for (const auto& img : model.images) {
+        TextureData td;
+        td.width = img.width;
+        td.height = img.height;
+        td.rgba.resize((size_t)img.width * img.height * 4, 255);
+        const int comp = img.component;
+        for (size_t px = 0; px < (size_t)img.width * img.height; px++) {
+            for (int c = 0; c < 4; c++) {
+                if (c < comp) td.rgba[px * 4 + c] = img.image[px * comp + c];
+                else if (c == 3) td.rgba[px * 4 + c] = 255; // opaque alpha
+                else td.rgba[px * 4 + c] = (comp == 1) ? img.image[px * comp] : 0;
+            }
+        }
+        out.textures.push_back(std::move(td));
+    }
+
     out.imageCount = (uint32_t)model.images.size();
     return true;
 }

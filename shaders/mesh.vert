@@ -7,11 +7,14 @@ layout(location = 2) in vec2 inUV;
 layout(push_constant) uniform Push {
     mat4 viewProj;
     mat4 model;
+    uint materialIndex;
 } pc;
 
 layout(location = 0) out vec3 vNormal;
+layout(location = 1) out vec2 vUV;
 
 void main() {
     gl_Position = pc.viewProj * pc.model * vec4(inPos, 1.0);
     vNormal = mat3(pc.model) * inNormal;
+    vUV = inUV;
 }

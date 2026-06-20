@@ -64,7 +64,9 @@ void VulkanEngine::init() {
     initProfiler();
     initImmediate();
     loadScene();
-    m_meshPipeline = createMeshPipeline(m_device, m_swapchainFormat, m_depthFormat);
+    if (m_scene.setLayout)
+        m_meshPipeline = createMeshPipeline(m_device, m_swapchainFormat, m_depthFormat,
+                                            m_scene.setLayout);
 }
 
 void VulkanEngine::run() {
@@ -633,8 +635,11 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
         vkCmdSetScissor(cmd, 0, 1, &scissor);
 
         // Draw the scene (simple forward; Faz 4 replaces this with V-buffer).
-        if (m_scene.indexCount > 0) {
+        if (m_scene.indexCount > 0 && m_meshPipeline.pipeline) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline.pipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    m_meshPipeline.layout, 0, 1, &m_scene.descriptorSet,
+                                    0, nullptr);
 
             float aspect = (float)m_swapchainExtent.width / (float)m_swapchainExtent.height;
             glm::mat4 viewProj = m_camera.proj(aspect) * m_camera.view();
@@ -647,7 +652,9 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
                 MeshPush push{};
                 push.viewProj = viewProj;
                 push.model = d.transform;
-                vkCmdPushConstants(cmd, m_meshPipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+                push.materialIndex = d.materialIndex;
+                vkCmdPushConstants(cmd, m_meshPipeline.layout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(MeshPush), &push);
                 vkCmdDrawIndexed(cmd, d.indexCount, 1, d.firstIndex, d.vertexOffset, 0);
             }
@@ -773,7 +780,7 @@ void VulkanEngine::cleanup() {
     if (m_immPool) vkDestroyCommandPool(m_device, m_immPool, nullptr);
     destroyPipeline(m_device, m_meshPipeline);
     cleanupSwapchain();
-    m_scene.destroy(m_allocator);
+    m_scene.destroy(m_device, m_allocator);
     if (m_allocator) vmaDestroyAllocator(m_allocator);
     if (m_device) vkDestroyDevice(m_device, nullptr);
     if (m_surface) vkDestroySurfaceKHR(m_instance, m_surface, nullptr);

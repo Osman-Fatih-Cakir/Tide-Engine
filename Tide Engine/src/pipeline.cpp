@@ -4,7 +4,8 @@
 #include <cstddef> // offsetof
 
 GraphicsPipeline createMeshPipeline(VkDevice device, VkFormat colorFormat,
-                                    VkFormat depthFormat) {
+                                    VkFormat depthFormat,
+                                    VkDescriptorSetLayout setLayout) {
     VkShaderModule vert = loadShaderModule(device, "shaders/mesh.vert", VK_SHADER_STAGE_VERTEX_BIT);
     VkShaderModule frag = loadShaderModule(device, "shaders/mesh.frag", VK_SHADER_STAGE_FRAGMENT_BIT);
 
@@ -78,14 +79,16 @@ GraphicsPipeline createMeshPipeline(VkDevice device, VkFormat colorFormat,
     dyn.dynamicStateCount = 2;
     dyn.pDynamicStates = dynStates;
 
-    // Layout: one push constant block (vertex stage).
+    // Layout: bindless descriptor set (set 0) + push constant block.
     VkPushConstantRange pcRange{};
-    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcRange.offset = 0;
     pcRange.size = sizeof(MeshPush);
 
     VkPipelineLayoutCreateInfo lci{};
     lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    lci.setLayoutCount = setLayout ? 1 : 0;
+    lci.pSetLayouts = setLayout ? &setLayout : nullptr;
     lci.pushConstantRangeCount = 1;
     lci.pPushConstantRanges = &pcRange;
 

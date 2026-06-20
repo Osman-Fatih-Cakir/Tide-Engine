@@ -1,6 +1,7 @@
 #pragma once
 #include "mesh.h"
 #include "gpu_buffer.h"
+#include "gpu_image.h"
 
 class VulkanEngine;
 
@@ -10,7 +11,7 @@ class VulkanEngine;
 class Scene {
 public:
     void build(VulkanEngine& eng, const MeshData& data);
-    void destroy(VmaAllocator alloc);
+    void destroy(VkDevice device, VmaAllocator alloc);
 
     Buffer vertexBuffer{};
     Buffer indexBuffer{};
@@ -20,4 +21,15 @@ public:
     uint32_t vertexCount   = 0;
     uint32_t indexCount    = 0;
     uint32_t materialCount = 0;
+
+    // --- bindless textures + material SSBO ---
+    std::vector<Image>    textures;
+    VkSampler             sampler        = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout      = VK_NULL_HANDLE;
+    VkDescriptorPool      descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet       descriptorSet  = VK_NULL_HANDLE;
+    uint32_t              textureCount   = 0;
+
+private:
+    void buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data);
 };
