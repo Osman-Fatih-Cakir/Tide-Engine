@@ -1,0 +1,38 @@
+# --- Visual Studio ---
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+
+# --- Build output / intermediate ---
+Bin/
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+Win32/
+ipch/
+*.obj
+*.o
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+*.log
+*.tlog
+*.lastbuildstate
+*.aps
+*.pch
+*.ipch
+
+# --- Notes ---
+# Dependency/ submodules are tracked as git submodule pointers; their
+# working-tree contents (incl. the GLFW CMake build/ output) are not
+# committed by this repo. Resources/ is tracked via Git LFS.

@@ -1,0 +1,13 @@
+[submodule "Dependency/glfw"]
+	path = Dependency/glfw
+	url = https://github.com/glfw/glfw.git
+[submodule "Dependency/imgui"]
+	path = Dependency/imgui
+	url = https://github.com/ocornut/imgui.git
+	branch = docking
+[submodule "Dependency/tinygltf"]
+	path = Dependency/tinygltf
+	url = https://github.com/syoyo/tinygltf.git
+[submodule "Dependency/tracy"]
+	path = Dependency/tracy
+	url = https://github.com/wolfpld/tracy.git
