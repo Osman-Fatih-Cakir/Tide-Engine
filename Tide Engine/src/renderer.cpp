@@ -3,7 +3,9 @@
 #include "scene.h"
 #include "shader.h"
 #include "mesh.h"
-#include <cstddef> // offsetof
+#include <cstddef>   // offsetof
+#include <algorithm> // sort
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Push constants (must match the GLSL layouts).
@@ -22,6 +24,14 @@ struct ResolvePush {
 };
 struct TonemapPush {
     float exposure;
+};
+struct TransparentPush {
+    glm::mat4 viewProj;
+    glm::mat4 model;
+    glm::vec4 cameraPos;
+    glm::vec4 sunDir;
+    glm::vec4 sunColor;
+    uint32_t  materialIndex;
 };
 
 // ---------------------------------------------------------------------------
@@ -251,6 +261,115 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         vkDestroyShaderModule(device, frag, nullptr);
     }
 
+    // ---- Transparent forward pipeline (blends into HDR, tests opaque depth) ----
+    {
+        VkShaderModule vert = loadShaderModule(device, "shaders/transparent.vert", VK_SHADER_STAGE_VERTEX_BIT);
+        VkShaderModule frag = loadShaderModule(device, "shaders/transparent.frag", VK_SHADER_STAGE_FRAGMENT_BIT);
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag; stages[1].pName = "main";
+
+        VkVertexInputBindingDescription binding{};
+        binding.binding = 0;
+        binding.stride = sizeof(Vertex);
+        binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        VkVertexInputAttributeDescription attrs[3]{};
+        attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
+        attrs[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
+        attrs[2] = {2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex, uv)};
+        VkPipelineVertexInputStateCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vi.vertexBindingDescriptionCount = 1;
+        vi.pVertexBindingDescriptions = &binding;
+        vi.vertexAttributeDescriptionCount = 3;
+        vi.pVertexAttributeDescriptions = attrs;
+
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vp{};
+        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1; vp.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rs{};
+        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.cullMode = VK_CULL_MODE_NONE; // glass is two-sided
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rs.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms{};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo ds{};
+        ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        ds.depthTestEnable = VK_TRUE;
+        ds.depthWriteEnable = VK_FALSE; // transparency doesn't occlude itself
+        ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendStateCreateInfo cb{};
+        cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cb.attachmentCount = 1;
+        cb.pAttachments = &cba;
+
+        VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dyn{};
+        dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dyn.dynamicStateCount = 2;
+        dyn.pDynamicStates = dynStates;
+
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pc.size = sizeof(TransparentPush);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 1;
+        lci.pSetLayouts = &sceneSetLayout;
+        lci.pushConstantRangeCount = 1;
+        lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_transparentLayout));
+
+        VkFormat hdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+        VkPipelineRenderingCreateInfo rendering{};
+        rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachmentFormats = &hdrFormat;
+        rendering.depthAttachmentFormat = depthFormat;
+
+        VkGraphicsPipelineCreateInfo gpi{};
+        gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        gpi.pNext = &rendering;
+        gpi.stageCount = 2; gpi.pStages = stages;
+        gpi.pVertexInputState = &vi;
+        gpi.pInputAssemblyState = &ia;
+        gpi.pViewportState = &vp;
+        gpi.pRasterizationState = &rs;
+        gpi.pMultisampleState = &ms;
+        gpi.pDepthStencilState = &ds;
+        gpi.pColorBlendState = &cb;
+        gpi.pDynamicState = &dyn;
+        gpi.layout = m_transparentLayout;
+        VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &m_transparentPipeline));
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+    }
+
     // ---- Resolve pipeline (compute) ----
     {
         VkShaderModule comp = loadShaderModule(device, "shaders/resolve.comp", VK_SHADER_STAGE_COMPUTE_BIT);
@@ -360,7 +479,8 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
                       extent, VK_IMAGE_ASPECT_COLOR_BIT, "Vis Image");
     m_hdr = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
-                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                      VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                       extent, VK_IMAGE_ASPECT_COLOR_BIT, "HDR Image");
 
     // Point resolve set (vis read, hdr write) and tonemap set (hdr sampled) at
@@ -403,6 +523,8 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_hdrSampler) vkDestroySampler(device, m_hdrSampler, nullptr);
     if (m_visPipeline) vkDestroyPipeline(device, m_visPipeline, nullptr);
     if (m_visLayout) vkDestroyPipelineLayout(device, m_visLayout, nullptr);
+    if (m_transparentPipeline) vkDestroyPipeline(device, m_transparentPipeline, nullptr);
+    if (m_transparentLayout) vkDestroyPipelineLayout(device, m_transparentLayout, nullptr);
     if (m_resolvePipeline) vkDestroyPipeline(device, m_resolvePipeline, nullptr);
     if (m_resolveLayout) vkDestroyPipelineLayout(device, m_resolveLayout, nullptr);
     if (m_tonemapPipeline) vkDestroyPipeline(device, m_tonemapPipeline, nullptr);
@@ -454,7 +576,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         depth.imageView = depthView;
         depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
         depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // transparent pass tests against it
         depth.clearValue.depthStencil = {1.0f, 0};
 
         VkRenderingInfo ri{};
@@ -474,12 +596,12 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdBindVertexBuffers(cmd, 0, 1, &scene.vertexBuffer.buffer, &offset);
         vkCmdBindIndexBuffer(cmd, scene.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        for (uint32_t i = 0; i < (uint32_t)scene.draws.size(); i++) {
-            const MeshDraw& d = scene.draws[i];
+        for (uint32_t drawID : scene.opaqueIndices) {
+            const MeshDraw& d = scene.draws[drawID];
             VisPush push{};
             push.viewProj = viewProj;
             push.model = d.transform;
-            push.drawID = i;
+            push.drawID = drawID;
             vkCmdPushConstants(cmd, m_visLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(VisPush), &push);
@@ -518,13 +640,98 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
     }
 
-    // ===================== Pass C: Tonemap (HDR -> swapchain) =====================
-    {
-        TracyVkZone(tracy, cmd, "Tonemap");
+    // ===================== Pass C: Transparent forward (blend -> HDR) =====================
+    // After this, HDR is in GENERAL (no transparency) or COLOR_ATTACHMENT (with).
+    bool hasTransparent = !scene.transparentIndices.empty();
+    if (hasTransparent) {
+        TracyVkZone(tracy, cmd, "Transparent");
+        // HDR: compute write (GENERAL) -> color attachment blend.
         imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        // Depth: vis wrote it -> transparent tests it (read-only).
+        imgBarrier(cmd, depthImage, VK_IMAGE_ASPECT_DEPTH_BIT,
+                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                   VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+        VkRenderingAttachmentInfo color{};
+        color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color.imageView = m_hdr.view;
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;  // keep the opaque resolve
+        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+        VkRenderingAttachmentInfo depth{};
+        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth.imageView = depthView;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+
+        VkRenderingInfo ri{};
+        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.renderArea.extent = extent;
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &color;
+        ri.pDepthAttachment = &depth;
+        vkCmdBeginRendering(cmd, &ri);
+
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentLayout,
+                                0, 1, &scene.descriptorSet, 0, nullptr);
+
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &scene.vertexBuffer.buffer, &offset);
+        vkCmdBindIndexBuffer(cmd, scene.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        // Back-to-front sort (centroid ~ transform origin), so blending is correct.
+        std::vector<uint32_t> sorted(scene.transparentIndices.begin(),
+                                     scene.transparentIndices.end());
+        std::sort(sorted.begin(), sorted.end(), [&](uint32_t a, uint32_t b) {
+            glm::vec3 ca = glm::vec3(scene.draws[a].transform[3]);
+            glm::vec3 cb = glm::vec3(scene.draws[b].transform[3]);
+            return glm::dot(ca - cameraPos, ca - cameraPos) >
+                   glm::dot(cb - cameraPos, cb - cameraPos);
+        });
+
+        glm::vec3 sun = sunDirection(settings);
+        for (uint32_t drawID : sorted) {
+            const MeshDraw& d = scene.draws[drawID];
+            TransparentPush push{};
+            push.viewProj = viewProj;
+            push.model = d.transform;
+            push.cameraPos = glm::vec4(cameraPos, 1.0f);
+            push.sunDir = glm::vec4(sun, settings.ambient);
+            push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+            push.materialIndex = d.materialIndex;
+            vkCmdPushConstants(cmd, m_transparentLayout,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(TransparentPush), &push);
+            vkCmdDrawIndexed(cmd, d.indexCount, 1, d.firstIndex, d.vertexOffset, 0);
+        }
+        vkCmdEndRendering(cmd);
+    }
+
+    // ===================== Pass D: Tonemap (HDR -> swapchain) =====================
+    {
+        TracyVkZone(tracy, cmd, "Tonemap");
+        // HDR source layout/stage depends on whether the transparent pass ran.
+        VkPipelineStageFlags2 hdrStage = hasTransparent
+            ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        VkAccessFlags2 hdrAccess = hasTransparent
+            ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        VkImageLayout hdrOld = hasTransparent
+            ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+        imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   hdrStage, hdrAccess,
                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                   hdrOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         imgBarrier(cmd, swapchainImage, VK_IMAGE_ASPECT_COLOR_BIT,
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,

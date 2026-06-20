@@ -270,6 +270,7 @@ void VulkanEngine::initDevice() {
 
     VkPhysicalDeviceFeatures2 f2{};
     f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    f2.features.geometryShader = VK_TRUE; // needed to read gl_PrimitiveID in the V-buffer frag
     f2.pNext = &f12;
 
     VkDeviceCreateInfo ci{};

@@ -46,6 +46,10 @@ private:
     VkPipeline       m_visPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_visLayout   = VK_NULL_HANDLE;
 
+    // Transparent forward pass (blends into HDR after the opaque resolve).
+    VkPipeline       m_transparentPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_transparentLayout   = VK_NULL_HANDLE;
+
     // Resolve pass (compute): set0 = scene, set1 = { vis storage, hdr storage }.
     VkPipeline            m_resolvePipeline = VK_NULL_HANDLE;
     VkPipelineLayout      m_resolveLayout   = VK_NULL_HANDLE;

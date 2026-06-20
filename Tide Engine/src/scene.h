@@ -19,6 +19,10 @@ public:
     Buffer drawBuffer{};   // GpuDraw[] — read by the resolve compute
 
     std::vector<MeshDraw> draws;
+    // Indices into `draws`, split by material alpha mode. Same drawID space as
+    // the GpuDraw SSBO (so the V-buffer can push the global index).
+    std::vector<uint32_t> opaqueIndices;
+    std::vector<uint32_t> transparentIndices;
     uint32_t vertexCount   = 0;
     uint32_t indexCount    = 0;
     uint32_t materialCount = 0;

@@ -2,6 +2,7 @@
 #include <shaderc/shaderc.hpp>
 #include <fstream>
 #include <sstream>
+#include <memory>
 
 // Read a text file, trying candidate path prefixes so it works regardless of cwd.
 static bool readText(const char* relPath, std::string& out, std::string& usedPath) {
@@ -19,6 +20,34 @@ static bool readText(const char* relPath, std::string& out, std::string& usedPat
     }
     return false;
 }
+
+// Resolves `#include "foo.glsl"` against the shaders dir (same prefix logic).
+class ShaderIncluder : public shaderc::CompileOptions::IncluderInterface {
+public:
+    shaderc_include_result* GetInclude(const char* requested, shaderc_include_type,
+                                       const char* /*requesting*/, size_t) override {
+        auto* data = new Payload();
+        std::string used;
+        if (!readText((std::string("shaders/") + requested).c_str(), data->content, used)) {
+            data->content = std::string("#error include not found: ") + requested;
+            used = requested;
+        }
+        data->name = used;
+        auto* res = new shaderc_include_result{};
+        res->source_name = data->name.c_str();
+        res->source_name_length = data->name.size();
+        res->content = data->content.c_str();
+        res->content_length = data->content.size();
+        res->user_data = data;
+        return res;
+    }
+    void ReleaseInclude(shaderc_include_result* res) override {
+        delete static_cast<Payload*>(res->user_data);
+        delete res;
+    }
+private:
+    struct Payload { std::string name, content; };
+};
 
 static shaderc_shader_kind toKind(VkShaderStageFlagBits stage) {
     switch (stage) {
@@ -40,6 +69,7 @@ VkShaderModule loadShaderModule(VkDevice device, const char* relPath,
     shaderc::Compiler compiler;
     shaderc::CompileOptions options;
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
+    options.SetIncluder(std::make_unique<ShaderIncluder>());
 #ifdef GPU_DEBUG
     options.SetGenerateDebugInfo();
 #else

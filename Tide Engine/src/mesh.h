@@ -18,10 +18,13 @@ struct GpuMaterial {
     int   metalRoughTexture = -1;
     float metallicFactor   = 1.0f;
     float roughnessFactor  = 1.0f;
-    int   _pad0 = 0;
-    int   _pad1 = 0;
-    int   _pad2 = 0;
+    int   alphaMode   = 0;     // 0 = OPAQUE, 1 = MASK, 2 = BLEND
+    float alphaCutoff = 0.5f;
+    int   _pad = 0;
 };
+
+// glTF alpha modes (matches GpuMaterial::alphaMode).
+enum AlphaMode { ALPHA_OPAQUE = 0, ALPHA_MASK = 1, ALPHA_BLEND = 2 };
 
 // Per-draw record as it lives in the draw SSBO (read by the resolve compute to
 // reconstruct a triangle from a packed visibility ID). scalar layout in GLSL.

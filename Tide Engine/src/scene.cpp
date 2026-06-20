@@ -73,10 +73,20 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
                                       "Scene Draw Buffer");
     }
 
+    // Classify draws by material alpha mode: BLEND -> transparent, else opaque.
+    for (uint32_t i = 0; i < (uint32_t)draws.size(); i++) {
+        uint32_t mi = draws[i].materialIndex;
+        bool blend = mi < data.materials.size() &&
+                     data.materials[mi].alphaMode == ALPHA_BLEND;
+        (blend ? transparentIndices : opaqueIndices).push_back(i);
+    }
+
     buildTexturesAndDescriptors(eng, data);
 
-    TE_INFO("Scene: draws=%u  vertices=%u  indices=%u  materials=%u  textures=%u\n",
-            (uint32_t)draws.size(), vertexCount, indexCount, materialCount, textureCount);
+    TE_INFO("Scene: draws=%u (opaque=%u transparent=%u)  vertices=%u  indices=%u  materials=%u  textures=%u\n",
+            (uint32_t)draws.size(), (uint32_t)opaqueIndices.size(),
+            (uint32_t)transparentIndices.size(),
+            vertexCount, indexCount, materialCount, textureCount);
 }
 
 void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data) {
@@ -116,6 +126,9 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
     }
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = arrayCount;
+    // Materials (b0) + textures (b1) are also read by the transparent forward frag.
+    bindings[0].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorBindingFlags flags[5] = {
         0,

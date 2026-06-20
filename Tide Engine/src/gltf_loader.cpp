@@ -148,6 +148,11 @@ bool loadGltf(const char* path, MeshData& out) {
             gm.baseColorTexture  = srcImage(pbr.baseColorTexture.index);
             gm.metalRoughTexture = srcImage(pbr.metallicRoughnessTexture.index);
             gm.normalTexture     = srcImage(m.normalTexture.index);
+            // Alpha mode: OPAQUE (default) / MASK / BLEND.
+            if (m.alphaMode == "BLEND")     gm.alphaMode = ALPHA_BLEND;
+            else if (m.alphaMode == "MASK") gm.alphaMode = ALPHA_MASK;
+            else                            gm.alphaMode = ALPHA_OPAQUE;
+            gm.alphaCutoff = (float)m.alphaCutoff;
             out.materials.push_back(gm);
         }
     }
