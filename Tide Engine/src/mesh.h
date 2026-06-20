@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include <limits>
 
 // Interleaved vertex. Tangent comes later (Faz 6/7 normal mapping).
 struct Vertex {
@@ -22,6 +23,12 @@ struct GpuMaterial {
     int   _pad2 = 0;
 };
 
+// Push constant for the simple forward pass (128 bytes = guaranteed minimum).
+struct MeshPush {
+    glm::mat4 viewProj;
+    glm::mat4 model;
+};
+
 // One drawable primitive: a slice of the shared index buffer + its material.
 struct MeshDraw {
     uint32_t  firstIndex    = 0;
@@ -38,4 +45,8 @@ struct MeshData {
     std::vector<GpuMaterial> materials;
     std::vector<MeshDraw>    draws;
     uint32_t                 imageCount = 0; // textures referenced (decoded in Faz 2B)
+
+    // World-space AABB (for auto camera placement).
+    glm::vec3 boundsMin = glm::vec3( std::numeric_limits<float>::max());
+    glm::vec3 boundsMax = glm::vec3(-std::numeric_limits<float>::max());
 };

@@ -21,6 +21,9 @@
     <ClCompile Include="src\gltf_impl.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\gltf_loader.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="src\scene.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\camera.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\shader.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\pipeline.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\Dependency\tracy\public\TracyClient.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -30,5 +33,8 @@
     <ClInclude Include="src\mesh.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\gltf_loader.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="src\scene.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\camera.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\shader.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\pipeline.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>

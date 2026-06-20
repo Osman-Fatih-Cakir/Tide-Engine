@@ -64,6 +64,7 @@ void VulkanEngine::init() {
     initProfiler();
     initImmediate();
     loadScene();
+    m_meshPipeline = createMeshPipeline(m_device, m_swapchainFormat, m_depthFormat);
 }
 
 void VulkanEngine::run() {
@@ -72,12 +73,14 @@ void VulkanEngine::run() {
     double titleAccum = 0.0;
 
     while (!glfwWindowShouldClose(m_window)) {
-        glfwPollEvents();
-        drawFrame();
-
         auto now = clock::now();
         double dt = std::chrono::duration<double>(now - last).count();
         last = now;
+
+        glfwPollEvents();
+        m_camera.update(m_window, (float)dt);
+        drawFrame();
+
         titleAccum += dt;
         if (titleAccum > 0.25) {
             char title[128];
@@ -371,9 +374,46 @@ void VulkanEngine::createSwapchain() {
         sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         VK_CHECK(vkCreateSemaphore(m_device, &sci, nullptr, &m_renderFinished[i]));
     }
+
+    createDepthResources();
+}
+
+void VulkanEngine::createDepthResources() {
+    VkImageCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = m_depthFormat;
+    ici.extent = {m_swapchainExtent.width, m_swapchainExtent.height, 1};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO;
+    ai.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    VK_CHECK(vmaCreateImage(m_allocator, &ici, &ai, &m_depthImage, &m_depthAlloc, nullptr));
+
+    VkImageViewCreateInfo vci{};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = m_depthImage;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = m_depthFormat;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VK_CHECK(vkCreateImageView(m_device, &vci, nullptr, &m_depthView));
+}
+
+void VulkanEngine::destroyDepthResources() {
+    if (m_depthView) vkDestroyImageView(m_device, m_depthView, nullptr);
+    if (m_depthImage) vmaDestroyImage(m_allocator, m_depthImage, m_depthAlloc);
+    m_depthView = VK_NULL_HANDLE;
+    m_depthImage = VK_NULL_HANDLE;
+    m_depthAlloc = VK_NULL_HANDLE;
 }
 
 void VulkanEngine::cleanupSwapchain() {
+    destroyDepthResources();
     for (auto v : m_swapchainImageViews) vkDestroyImageView(m_device, v, nullptr);
     for (auto s : m_renderFinished) vkDestroySemaphore(m_device, s, nullptr);
     m_swapchainImageViews.clear();
@@ -485,12 +525,34 @@ void VulkanEngine::immediateSubmit(const std::function<void(VkCommandBuffer)>& f
 // Scene load
 // ===========================================================================
 void VulkanEngine::loadScene() {
+    // Path is relative to the working directory. Try candidates so it runs whether
+    // the cwd is the Bin output dir or the solution dir.
+    static const char* kCandidates[] = {
+        "../Resources/nowindows/Room_NoWindows.gltf",
+        "Resources/nowindows/Room_NoWindows.gltf",
+        "../../Resources/nowindows/Room_NoWindows.gltf",
+    };
+
     MeshData data;
-    if (!loadGltf("../Resources/nowindows/Room_NoWindows.gltf", data)) {
-        TE_ERROR("glTF load failed; continuing with empty scene.\n");
+    bool loaded = false;
+    for (const char* path : kCandidates) {
+        if (loadGltf(path, data)) { TE_INFO("Loaded scene: %s\n", path); loaded = true; break; }
+    }
+    if (!loaded) {
+        TE_ERROR("glTF load failed (all candidate paths); continuing with empty scene.\n");
         return;
     }
     m_scene.build(*this, data);
+
+    // Frame the camera to the scene bounds.
+    glm::vec3 center = 0.5f * (data.boundsMin + data.boundsMax);
+    float radius = glm::length(data.boundsMax - data.boundsMin) * 0.5f;
+    if (radius <= 0.0f) radius = 1.0f;
+    m_camera.setLookAt(center + glm::vec3(0.0f, radius * 0.3f, radius * 1.5f), center);
+    m_camera.farZ = radius * 10.0f + 10.0f;
+    m_camera.speed = radius * 0.5f;
+    TE_INFO("Scene bounds center=(%.2f,%.2f,%.2f) radius=%.2f\n",
+            center.x, center.y, center.z, radius);
 }
 
 // ===========================================================================
@@ -503,24 +565,35 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
     VK_CHECK(vkBeginCommandBuffer(cmd, &bi));
 
     {
-        TracyVkZone(m_tracyCtx, cmd, "Clear");
+        TracyVkZone(m_tracyCtx, cmd, "Forward");
 
-        // UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
-        VkImageMemoryBarrier2 toColor{};
-        toColor.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        toColor.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-        toColor.srcAccessMask = 0;
-        toColor.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        toColor.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-        toColor.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        toColor.image = m_swapchainImages[imageIndex];
-        toColor.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        // UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL  (+ depth UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL)
+        VkImageMemoryBarrier2 toAttach[2]{};
+        toAttach[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        toAttach[0].srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        toAttach[0].srcAccessMask = 0;
+        toAttach[0].dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        toAttach[0].dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        toAttach[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toAttach[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        toAttach[0].image = m_swapchainImages[imageIndex];
+        toAttach[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+        toAttach[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        toAttach[1].srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        toAttach[1].srcAccessMask = 0;
+        toAttach[1].dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        toAttach[1].dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        toAttach[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toAttach[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        toAttach[1].image = m_depthImage;
+        toAttach[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
 
         VkDependencyInfo dep{};
         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers = &toColor;
+        dep.imageMemoryBarrierCount = 2;
+        dep.pImageMemoryBarriers = toAttach;
         vkCmdPipelineBarrier2(cmd, &dep);
 
         VkRenderingAttachmentInfo color{};
@@ -531,15 +604,55 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color.clearValue.color = {{0.02f, 0.04f, 0.10f, 1.0f}};
 
+        VkRenderingAttachmentInfo depth{};
+        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth.imageView = m_depthView;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth.clearValue.depthStencil = {1.0f, 0};
+
         VkRenderingInfo ri{};
         ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
         ri.renderArea.extent = m_swapchainExtent;
         ri.layerCount = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments = &color;
+        ri.pDepthAttachment = &depth;
 
         vkCmdBeginRendering(cmd, &ri);
-        // (Phase 4+ will draw here.)
+
+        // Dynamic viewport/scissor.
+        VkViewport vp{};
+        vp.width = (float)m_swapchainExtent.width;
+        vp.height = (float)m_swapchainExtent.height;
+        vp.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        VkRect2D scissor{};
+        scissor.extent = m_swapchainExtent;
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        // Draw the scene (simple forward; Faz 4 replaces this with V-buffer).
+        if (m_scene.indexCount > 0) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline.pipeline);
+
+            float aspect = (float)m_swapchainExtent.width / (float)m_swapchainExtent.height;
+            glm::mat4 viewProj = m_camera.proj(aspect) * m_camera.view();
+
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &m_scene.vertexBuffer.buffer, &offset);
+            vkCmdBindIndexBuffer(cmd, m_scene.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+            for (const MeshDraw& d : m_scene.draws) {
+                MeshPush push{};
+                push.viewProj = viewProj;
+                push.model = d.transform;
+                vkCmdPushConstants(cmd, m_meshPipeline.layout, VK_SHADER_STAGE_VERTEX_BIT,
+                                   0, sizeof(MeshPush), &push);
+                vkCmdDrawIndexed(cmd, d.indexCount, 1, d.firstIndex, d.vertexOffset, 0);
+            }
+        }
+
         vkCmdEndRendering(cmd);
 
         // COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC
@@ -658,6 +771,7 @@ void VulkanEngine::cleanup() {
     }
     if (m_immFence) vkDestroyFence(m_device, m_immFence, nullptr);
     if (m_immPool) vkDestroyCommandPool(m_device, m_immPool, nullptr);
+    destroyPipeline(m_device, m_meshPipeline);
     cleanupSwapchain();
     m_scene.destroy(m_allocator);
     if (m_allocator) vmaDestroyAllocator(m_allocator);

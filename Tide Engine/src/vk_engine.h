@@ -1,6 +1,8 @@
 #pragma once
 #include "pch.h"
 #include "scene.h"
+#include "camera.h"
+#include "pipeline.h"
 
 // Number of frames the CPU may work ahead of the GPU.
 inline constexpr uint32_t FRAMES_IN_FLIGHT = 2;
@@ -39,6 +41,8 @@ private:
     void createSwapchain();
     void cleanupSwapchain();
     void recreateSwapchain();
+    void createDepthResources();
+    void destroyDepthResources();
     void initFrames();
     void initProfiler();
     void initImmediate();
@@ -84,6 +88,17 @@ private:
 
     // --- scene ---
     Scene m_scene;
+
+    // --- depth ---
+    VkImage       m_depthImage = VK_NULL_HANDLE;
+    VmaAllocation m_depthAlloc = VK_NULL_HANDLE;
+    VkImageView   m_depthView  = VK_NULL_HANDLE;
+    VkFormat      m_depthFormat = VK_FORMAT_D32_SFLOAT;
+
+    // --- forward pass + camera ---
+    GraphicsPipeline m_meshPipeline;
+    Camera           m_camera;
+    float            m_dt = 0.0f;
 
     // --- profiling ---
     TracyVkCtx m_tracyCtx = nullptr;

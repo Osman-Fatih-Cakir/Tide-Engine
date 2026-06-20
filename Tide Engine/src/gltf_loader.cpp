@@ -65,6 +65,9 @@ static void addPrimitive(const tinygltf::Model& model,
         Vertex v{};
         const float* p = (const float*)(posBase + i * posStride);
         v.position = glm::vec3(p[0], p[1], p[2]);
+        glm::vec3 wp = glm::vec3(world * glm::vec4(v.position, 1.0f));
+        out.boundsMin = glm::min(out.boundsMin, wp);
+        out.boundsMax = glm::max(out.boundsMax, wp);
         if (nrmBase) {
             const float* n = (const float*)(nrmBase + i * nrmStride);
             v.normal = glm::vec3(n[0], n[1], n[2]);
