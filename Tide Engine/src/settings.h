@@ -13,6 +13,8 @@ struct Settings {
     bool  shadowsEnabled  = true;
     float sunAngularSize  = 0.3f;   // sun cone angle (degrees; larger = softer penumbra)
     int   shadowSamples   = 4;      // rays per pixel (1 = hard shadow)
+    bool  shadowDenoise   = true;   // temporal accumulation of the shadow term
+    float shadowHistAlpha = 0.1f;   // EMA blend (lower = smoother, more lag)
 
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 

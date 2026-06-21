@@ -39,10 +39,18 @@ private:
     VkFormat m_depthFormat     = VK_FORMAT_UNDEFINED;
 
     // Screen-sized targets.
-    Image      m_vis{};                 // R32_UINT packed (drawID<<20 | primID)
+    Image      m_vis{};                 // R32_UINT packed (instanceID<<20 | primID)
     Image      m_hdr{};                 // RGBA16F linear radiance
+    Image      m_shadowHist[2]{};       // RG16F temporal shadow: R=visibility, G=linear depth
     VkExtent2D m_extent = {};
     VkSampler  m_hdrSampler = VK_NULL_HANDLE;
+    VkSampler  m_histSampler = VK_NULL_HANDLE;
+
+    // Temporal shadow state.
+    uint32_t   m_histIndex = 0;         // which m_shadowHist is "current" (write)
+    bool       m_haveHistory = false;
+    glm::mat4  m_prevViewProj = glm::mat4(1.0f);
+    float      m_prevSunAz = 1e9f, m_prevSunEl = 1e9f;
 
     // Visibility pass (raster).
     VkPipeline       m_visPipeline = VK_NULL_HANDLE;
@@ -52,11 +60,12 @@ private:
     VkPipeline       m_transparentPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_transparentLayout   = VK_NULL_HANDLE;
 
-    // Resolve pass (compute): set0 = scene, set1 = { vis storage, hdr storage }.
+    // Resolve pass (compute): set0 = scene, set1 = { vis, hdr, shadowHist read/write }.
+    // Two ping-pong sets so this frame reads last frame's history and writes the other.
     VkPipeline            m_resolvePipeline = VK_NULL_HANDLE;
     VkPipelineLayout      m_resolveLayout   = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_resolveSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSet       m_resolveSet       = VK_NULL_HANDLE;
+    VkDescriptorSet       m_resolveSet[2]    = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
     // Tonemap pass (fullscreen fragment): set0 = { hdr sampled }.
     VkPipeline            m_tonemapPipeline = VK_NULL_HANDLE;

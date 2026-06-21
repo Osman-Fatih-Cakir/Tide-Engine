@@ -18,10 +18,12 @@ struct VisPush {
 };
 struct ResolvePush {
     glm::mat4  viewProj;
+    glm::mat4  prevViewProj; // for temporal reprojection of the shadow history
     glm::vec4  cameraPos;  // xyz
     glm::vec4  sunDir;     // xyz = dir to sun, w = ambient
     glm::vec4  sunColor;   // rgb = radiance
     glm::vec4  shadowCfg;  // ray-traced shadow config
+    glm::vec4  temporal;   // x=reset y=histAlpha z=denoiseOn
     glm::uvec2 screenSize;
 };
 struct TonemapPush {
@@ -112,10 +114,21 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         VK_CHECK(vkCreateSampler(device, &sci, nullptr, &m_hdrSampler));
     }
+    // Shadow-history sampler (linear, clamp) for temporal reprojection lookups.
+    {
+        VkSamplerCreateInfo sci{};
+        sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        VK_CHECK(vkCreateSampler(device, &sci, nullptr, &m_histSampler));
+    }
 
     // ---- Descriptor set layouts (resolve set1, tonemap set0) ----
     {
-        VkDescriptorSetLayoutBinding b[2]{};
+        VkDescriptorSetLayoutBinding b[4]{};
         b[0].binding = 0; // vis storage image (read)
         b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[0].descriptorCount = 1;
@@ -124,9 +137,17 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[1].descriptorCount = 1;
         b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[2].binding = 2; // shadow history (read, sampled)
+        b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[2].descriptorCount = 1;
+        b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[3].binding = 3; // shadow history (write, storage)
+        b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[3].descriptorCount = 1;
+        b[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 2;
+        lci.bindingCount = 4;
         lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_resolveSetLayout));
     }
@@ -147,12 +168,12 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     {
         VkDescriptorPoolSize sizes[2]{};
         sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        sizes[0].descriptorCount = 2;
+        sizes[0].descriptorCount = 6;  // 2 resolve sets * (vis + hdr + histWrite)
         sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sizes[1].descriptorCount = 1; // tonemap (hdr)
+        sizes[1].descriptorCount = 3;  // tonemap (hdr) + 2 resolve sets (histRead)
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pci.maxSets = 2;
+        pci.maxSets = 3;
         pci.poolSizeCount = 2;
         pci.pPoolSizes = sizes;
         VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_pool));
@@ -162,7 +183,8 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         dai.descriptorPool = m_pool;
         dai.descriptorSetCount = 1;
         dai.pSetLayouts = &m_resolveSetLayout;
-        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_resolveSet));
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_resolveSet[0]));
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_resolveSet[1]));
         dai.pSetLayouts = &m_tonemapSetLayout;
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_tonemapSet));
     }
@@ -486,45 +508,75 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                       extent, VK_IMAGE_ASPECT_COLOR_BIT, "HDR Image");
+    for (int i = 0; i < 2; i++)
+        m_shadowHist[i] = makeImage(eng, VK_FORMAT_R16G16_SFLOAT,
+                                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                    extent, VK_IMAGE_ASPECT_COLOR_BIT,
+                                    i == 0 ? "Shadow Hist 0" : "Shadow Hist 1");
 
-    // Point resolve set (vis read, hdr write) and tonemap set (hdr sampled) at
-    // the fresh views.
+    // Initialize both history images to GENERAL so the per-frame "read = GENERAL ->
+    // SHADER_READ" barrier is always valid (first frame forces a history reset).
+    eng.immediateSubmit([&](VkCommandBuffer cmd) {
+        for (int i = 0; i < 2; i++)
+            imgBarrier(cmd, m_shadowHist[i].image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    });
+    m_haveHistory = false;
+    m_histIndex = 0;
+
+    // Resolve sets ping-pong: set[k] writes hist[k] (b3) and reads hist[1-k] (b2).
     VkDescriptorImageInfo visInfo{};
     visInfo.imageView = m_vis.view;
     visInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkDescriptorImageInfo hdrStore{};
     hdrStore.imageView = m_hdr.view;
     hdrStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo histSamp[2]{}, histStore[2]{};
+    for (int i = 0; i < 2; i++) {
+        histSamp[i].sampler = m_histSampler;
+        histSamp[i].imageView = m_shadowHist[i].view;
+        histSamp[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        histStore[i].imageView = m_shadowHist[i].view;
+        histStore[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    }
     VkDescriptorImageInfo hdrSamp{};
     hdrSamp.sampler = m_hdrSampler;
     hdrSamp.imageView = m_hdr.view;
     hdrSamp.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkWriteDescriptorSet w[3]{};
-    w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w[0].dstSet = m_resolveSet; w[0].dstBinding = 0;
-    w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    w[0].descriptorCount = 1; w[0].pImageInfo = &visInfo;
-    w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w[1].dstSet = m_resolveSet; w[1].dstBinding = 1;
-    w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    w[1].descriptorCount = 1; w[1].pImageInfo = &hdrStore;
-    w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w[2].dstSet = m_tonemapSet; w[2].dstBinding = 0;
-    w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    w[2].descriptorCount = 1; w[2].pImageInfo = &hdrSamp;
-    vkUpdateDescriptorSets(eng.device(), 3, w, 0, nullptr);
+    std::vector<VkWriteDescriptorSet> w;
+    auto add = [&](VkDescriptorSet set, uint32_t bind, VkDescriptorType t,
+                   const VkDescriptorImageInfo* info) {
+        VkWriteDescriptorSet x{};
+        x.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        x.dstSet = set; x.dstBinding = bind; x.descriptorType = t;
+        x.descriptorCount = 1; x.pImageInfo = info;
+        w.push_back(x);
+    };
+    for (int k = 0; k < 2; k++) {
+        add(m_resolveSet[k], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &visInfo);
+        add(m_resolveSet[k], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &hdrStore);
+        add(m_resolveSet[k], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &histSamp[1 - k]);
+        add(m_resolveSet[k], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &histStore[k]);
+    }
+    add(m_tonemapSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrSamp);
+    vkUpdateDescriptorSets(eng.device(), (uint32_t)w.size(), w.data(), 0, nullptr);
 }
 
 void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_vis);
     destroyImage(eng.allocator(), eng.device(), m_hdr);
+    destroyImage(eng.allocator(), eng.device(), m_shadowHist[0]);
+    destroyImage(eng.allocator(), eng.device(), m_shadowHist[1]);
 }
 
 void Renderer::destroy(VulkanEngine& eng) {
     VkDevice device = eng.device();
     destroyTargets(eng);
     if (m_hdrSampler) vkDestroySampler(device, m_hdrSampler, nullptr);
+    if (m_histSampler) vkDestroySampler(device, m_histSampler, nullptr);
     if (m_visPipeline) vkDestroyPipeline(device, m_visPipeline, nullptr);
     if (m_visLayout) vkDestroyPipelineLayout(device, m_visLayout, nullptr);
     if (m_transparentPipeline) vkDestroyPipeline(device, m_transparentPipeline, nullptr);
@@ -561,6 +613,16 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         settings.shadowsEnabled ? (float)settings.shadowSamples : 0.0f,
         settings.shadowsEnabled ? 1.0f : 0.0f,
         (float)(m_frameIndex++ & 0xFFFF));                   // frame index for dither
+
+    // Temporal shadow denoise state. Reset history when it's the first frame, the
+    // sun moved (shadows changed), or denoise is off.
+    bool sunMoved = settings.sunAzimuthDeg != m_prevSunAz ||
+                    settings.sunElevationDeg != m_prevSunEl;
+    bool reset = !m_haveHistory || sunMoved || !settings.shadowDenoise;
+    glm::vec4 temporal(reset ? 1.0f : 0.0f,
+                       settings.shadowHistAlpha,
+                       settings.shadowDenoise ? 1.0f : 0.0f, 0.0f);
+    uint32_t cur = m_histIndex;
 
     // ===================== Pass A: Visibility (raster) =====================
     {
@@ -637,18 +699,29 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        // Shadow history: read prev (hist[1-cur]) GENERAL->SHADER_READ; write hist[cur]->GENERAL.
+        imgBarrier(cmd, m_shadowHist[1 - cur].image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        imgBarrier(cmd, m_shadowHist[cur].image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_resolvePipeline);
-        VkDescriptorSet sets[2] = {scene.descriptorSet, m_resolveSet};
+        VkDescriptorSet sets[2] = {scene.descriptorSet, m_resolveSet[cur]};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_resolveLayout,
                                 0, 2, sets, 0, nullptr);
 
         ResolvePush push{};
         push.viewProj = viewProj;
+        push.prevViewProj = m_prevViewProj;
         push.cameraPos = glm::vec4(cameraPos, 1.0f);
         push.sunDir = glm::vec4(sun, settings.ambient);
         push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
         push.shadowCfg = shadowCfg;
+        push.temporal = temporal;
         push.screenSize = glm::uvec2(extent.width, extent.height);
         vkCmdPushConstants(cmd, m_resolveLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(ResolvePush), &push);
@@ -656,6 +729,13 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
         m_eng->cmdEndLabel(cmd);
     }
+
+    // Advance temporal state for next frame.
+    m_prevViewProj = viewProj;
+    m_prevSunAz = settings.sunAzimuthDeg;
+    m_prevSunEl = settings.sunElevationDeg;
+    m_haveHistory = true;
+    m_histIndex = 1 - cur;
 
     // ===================== Pass C: Transparent forward (blend -> HDR) =====================
     // After this, HDR is in GENERAL (no transparency) or COLOR_ATTACHMENT (with).

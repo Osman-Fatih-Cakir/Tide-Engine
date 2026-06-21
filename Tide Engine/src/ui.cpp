@@ -127,6 +127,8 @@ void Ui::buildPanel(Settings& s, float dt) {
     ImGui::Checkbox("Enabled", &s.shadowsEnabled);
     ImGui::SliderFloat("Softness", &s.sunAngularSize, 0.0f, 5.0f, "%.2f deg");
     ImGui::SliderInt("Samples",    &s.shadowSamples,  1, 16);
+    ImGui::Checkbox("Denoise (temporal)", &s.shadowDenoise);
+    ImGui::SliderFloat("History",  &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
 
     ImGui::SeparatorText("Tonemap");
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 5.0f);

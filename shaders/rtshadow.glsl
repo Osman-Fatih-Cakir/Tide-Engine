@@ -38,15 +38,20 @@ float traceSunShadow(vec3 P, vec3 N, vec3 L, float coneHalfAngle,
     vec3 B = cross(L, T);
     float tanA = tan(coneHalfAngle);
 
-    uint seed = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + frame * 26699u + 1u;
-
     int n = max(samples, 1);
+
+    // Golden-angle (Fibonacci) disk: low-discrepancy radial layout, rotated by a
+    // per-pixel + per-frame phase so frames decorrelate (temporal averages them).
+    uint seed = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + frame * 26699u + 1u;
+    float rot = 6.2831853 * rtHash(seed);
+    const float GOLDEN = 2.39996323; // radians
+
     float occluded = 0.0;
     for (int s = 0; s < n; s++) {
         vec3 dir = L;
-        if (tanA > 0.0 && n > 1) {
-            float r = sqrt(rtHash(seed)) * tanA;
-            float ph = 6.2831853 * rtHash(seed);
+        if (tanA > 0.0) {
+            float r  = sqrt((float(s) + 0.5) / float(n)) * tanA;
+            float ph = float(s) * GOLDEN + rot;
             dir = normalize(L + (T * (r * cos(ph)) + B * (r * sin(ph))));
         }
         if (rtOccluded(origin, dir)) occluded += 1.0;

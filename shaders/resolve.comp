@@ -48,13 +48,17 @@ layout(std430, set = 0, binding = 6) readonly buffer Geometries { GpuGeometry ge
 // ----- Resolve set (set 1) -----
 layout(r32ui, set = 1, binding = 0) uniform readonly uimage2D visImage;
 layout(rgba16f, set = 1, binding = 1) uniform writeonly image2D hdrImage;
+layout(set = 1, binding = 2) uniform sampler2D shadowHistRead;     // R=visibility, G=linear depth
+layout(rg16f, set = 1, binding = 3) uniform writeonly image2D shadowHistWrite;
 
 layout(push_constant) uniform Push {
     mat4  viewProj;
+    mat4  prevViewProj;  // temporal reprojection of the shadow history
     vec4  cameraPos;
     vec4  sunDir;        // xyz = dir to sun, w = ambient
     vec4  sunColor;      // rgb = radiance
     vec4  shadowCfg;     // x=sunConeRad y=samples z=shadowsOn w=frameIndex
+    vec4  temporal;      // x=reset y=histAlpha z=denoiseOn
     uvec2 screenSize;
 } pc;
 
@@ -80,6 +84,7 @@ void main() {
     uint v = imageLoad(visImage, pix).r;
     if (v == 0xFFFFFFFFu) {
         imageStore(hdrImage, pix, vec4(0.02, 0.03, 0.05, 1.0)); // empty -> dim sky
+        imageStore(shadowHistWrite, pix, vec4(1.0, 1e6, 0.0, 0.0)); // lit + far depth
         return;
     }
 
@@ -183,6 +188,22 @@ void main() {
     if (pc.shadowCfg.z > 0.5)
         shadow = traceSunShadow(worldPos, N, L, pc.shadowCfg.x,
                                 int(pc.shadowCfg.y), uint(pc.shadowCfg.w), vec2(pix));
+
+    // ----- Temporal accumulation (reproject last frame's shadow) -----
+    float curW = (pc.viewProj * vec4(worldPos, 1.0)).w; // linear depth proxy (clip w)
+    {
+        vec4 pc4 = pc.prevViewProj * vec4(worldPos, 1.0);
+        if (pc.temporal.z > 0.5 && pc.temporal.x < 0.5 && pc4.w > 0.0) {
+            vec2 pv = (pc4.xy / pc4.w) * 0.5 + 0.5;
+            if (all(greaterThanEqual(pv, vec2(0.0))) && all(lessThanEqual(pv, vec2(1.0)))) {
+                vec2 hist = texture(shadowHistRead, pv).rg; // r=shadow, g=depth
+                // Accept if the reprojected surface depth matches (same surface).
+                if (abs(hist.g - pc4.w) <= 0.03 * pc4.w)
+                    shadow = mix(hist.r, shadow, pc.temporal.y);
+            }
+        }
+    }
+    imageStore(shadowHistWrite, pix, vec4(shadow, curW, 0.0, 0.0));
 
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb) * shadow;
     color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO (real GI in Faz 7)
