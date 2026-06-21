@@ -21,6 +21,29 @@ static const char* kDeviceExtensions[] = {
     VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
 };
 
+static Dlss::Quality dlssQuality(int q) {
+    switch (q) {
+        case 0: return Dlss::Quality::Performance;
+        case 1: return Dlss::Quality::Balanced;
+        case 2: return Dlss::Quality::Quality;
+        case 3: return Dlss::Quality::UltraPerformance;
+        case 4: return Dlss::Quality::DLAA;
+    }
+    return Dlss::Quality::Quality;
+}
+
+// Append items from src into dst, skipping any already present (by string).
+static void appendUnique(std::vector<const char*>& dst, const std::vector<std::string>& src,
+                         std::vector<std::string>& storage) {
+    for (const auto& s : src) {
+        bool present = false;
+        for (const char* e : dst) if (s == e) { present = true; break; }
+        if (present) continue;
+        storage.push_back(s);
+        dst.push_back(storage.back().c_str());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Debug messenger
 // ---------------------------------------------------------------------------
@@ -60,15 +83,19 @@ void VulkanEngine::init() {
     pickPhysicalDevice();
     initDevice();
     initAllocator();
+    m_dlss.init(m_instance, m_physicalDevice, m_device); // before swapchain (sizes render extent)
     createSwapchain();
     initFrames();
     initProfiler();
     initImmediate();
     loadScene();
+    recreateDlssFeature();
     if (m_scene.setLayout) {
         m_renderer.init(*this, m_swapchainFormat, m_depthFormat, m_scene.setLayout);
-        m_renderer.createTargets(*this, m_swapchainExtent);
+        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent);
     }
+    m_lastDlssEnabled = m_settings.dlssEnabled;
+    m_lastDlssQuality = m_settings.dlssQuality;
     m_ui.init(*this, m_swapchainFormat, 2, (uint32_t)m_swapchainImages.size());
 }
 
@@ -138,6 +165,10 @@ void VulkanEngine::initInstance() {
         extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         layers.push_back("VK_LAYER_KHRONOS_validation");
     }
+
+    // DLSS/NGX-required instance extensions (e.g. get-physical-device-properties2).
+    std::vector<std::string> ngxStore; ngxStore.reserve(64);
+    appendUnique(extensions, Dlss::requiredInstanceExtensions(), ngxStore);
 
     VkInstanceCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -273,13 +304,24 @@ void VulkanEngine::initDevice() {
     f2.features.geometryShader = VK_TRUE; // needed to read gl_PrimitiveID in the V-buffer frag
     f2.pNext = &f12;
 
+    // Base extensions + DLSS/NGX-required device extensions.
+    std::vector<const char*> deviceExts(kDeviceExtensions,
+        kDeviceExtensions + sizeof(kDeviceExtensions) / sizeof(char*));
+    std::vector<std::string> ngxStore; ngxStore.reserve(64);
+    appendUnique(deviceExts, Dlss::requiredDeviceExtensions(), ngxStore);
+    // We enable buffer device address via the Vulkan 1.2 feature; the spec forbids
+    // also listing the (promoted) VK_EXT_buffer_device_address extension.
+    deviceExts.erase(std::remove_if(deviceExts.begin(), deviceExts.end(),
+        [](const char* e) { return std::strcmp(e, VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) == 0; }),
+        deviceExts.end());
+
     VkDeviceCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     ci.pNext = &f2;
     ci.queueCreateInfoCount = 1;
     ci.pQueueCreateInfos = &qci;
-    ci.enabledExtensionCount = (uint32_t)(sizeof(kDeviceExtensions) / sizeof(char*));
-    ci.ppEnabledExtensionNames = kDeviceExtensions;
+    ci.enabledExtensionCount = (uint32_t)deviceExts.size();
+    ci.ppEnabledExtensionNames = deviceExts.data();
 
     VK_CHECK(vkCreateDevice(m_physicalDevice, &ci, nullptr, &m_device));
     vkGetDeviceQueue(m_device, m_queueFamily, 0, &m_queue);
@@ -372,6 +414,10 @@ void VulkanEngine::createSwapchain() {
     m_swapchainImages.resize(imageCount);
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, m_swapchainImages.data());
 
+    // Render resolution (DLSS upscales render -> display). Must be known before
+    // the depth target is sized.
+    m_renderExtent = computeRenderExtent();
+
     m_swapchainImageViews.resize(imageCount);
     m_renderFinished.resize(imageCount);
     for (uint32_t i = 0; i < imageCount; i++) {
@@ -396,12 +442,13 @@ void VulkanEngine::createDepthResources() {
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType = VK_IMAGE_TYPE_2D;
     ici.format = m_depthFormat;
-    ici.extent = {m_swapchainExtent.width, m_swapchainExtent.height, 1};
+    ici.extent = {m_renderExtent.width, m_renderExtent.height, 1}; // render res (DLSS reads it)
     ici.mipLevels = 1;
     ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
     ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT; // DLSS reads depth
 
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO;
@@ -446,8 +493,26 @@ void VulkanEngine::recreateSwapchain() {
     vkDeviceWaitIdle(m_device);
     cleanupSwapchain();
     createSwapchain();
+    recreateDlssFeature();
     if (m_scene.setLayout)
-        m_renderer.createTargets(*this, m_swapchainExtent);
+        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent);
+}
+
+VkExtent2D VulkanEngine::computeRenderExtent() {
+    if (m_dlss.available() && m_settings.dlssEnabled)
+        return m_dlss.optimalRenderExtent(m_swapchainExtent, dlssQuality(m_settings.dlssQuality));
+    return m_swapchainExtent; // native (no upscale)
+}
+
+void VulkanEngine::recreateDlssFeature() {
+    if (m_dlss.available() && m_settings.dlssEnabled) {
+        immediateSubmit([&](VkCommandBuffer cmd) {
+            m_dlss.createFeature(cmd, m_renderExtent, m_swapchainExtent,
+                                 dlssQuality(m_settings.dlssQuality));
+        });
+    } else {
+        m_dlss.releaseFeature();
+    }
 }
 
 // ===========================================================================
@@ -582,12 +647,17 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
         // V-buffer: Visibility (raster) -> Resolve (compute, PBR->HDR) -> Tonemap.
         // Leaves the swapchain image in COLOR_ATTACHMENT_OPTIMAL.
         if (m_scene.indexCount > 0) {
-            float aspect = (float)m_swapchainExtent.width / (float)m_swapchainExtent.height;
+            float aspect = (float)m_renderExtent.width / (float)m_renderExtent.height;
             glm::mat4 viewProj = m_camera.proj(aspect) * m_camera.view();
+            bool dlssActive = m_dlss.available() && m_settings.dlssEnabled && m_dlss.hasFeature();
+            m_settings.dlssAvailable = m_dlss.available();
+            m_settings.dlssActive = dlssActive;
+            m_settings.renderW = m_renderExtent.width;   m_settings.renderH = m_renderExtent.height;
+            m_settings.displayW = m_swapchainExtent.width; m_settings.displayH = m_swapchainExtent.height;
             m_renderer.record(cmd, m_scene, viewProj, m_camera.position, m_settings,
-                              m_swapchainExtent,
+                              m_renderExtent, m_swapchainExtent,
                               m_swapchainImages[imageIndex], m_swapchainImageViews[imageIndex],
-                              m_depthImage, m_depthView, m_tracyCtx);
+                              m_depthImage, m_depthView, &m_dlss, dlssActive, m_tracyCtx);
         } else {
             // No scene: just put the swapchain into a presentable color state.
             VkImageMemoryBarrier2 toAttach{};
@@ -669,6 +739,15 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
 
 void VulkanEngine::drawFrame(float dt) {
     ZoneScoped; // Tracy CPU zone
+
+    // DLSS mode/enable change -> render resolution changes; rebuild targets+feature.
+    if (m_settings.dlssEnabled != m_lastDlssEnabled ||
+        m_settings.dlssQuality != m_lastDlssQuality) {
+        m_lastDlssEnabled = m_settings.dlssEnabled;
+        m_lastDlssQuality = m_settings.dlssQuality;
+        recreateSwapchain();
+        return;
+    }
 
     FrameData& frame = m_frames[m_currentFrame];
 
@@ -781,6 +860,7 @@ void VulkanEngine::cleanup() {
     if (m_immFence) vkDestroyFence(m_device, m_immFence, nullptr);
     if (m_immPool) vkDestroyCommandPool(m_device, m_immPool, nullptr);
     m_renderer.destroy(*this);
+    m_dlss.shutdown(); // release NGX feature + context before destroying the device
     cleanupSwapchain();
     m_scene.destroy(m_device, m_allocator);
     if (m_allocator) vmaDestroyAllocator(m_allocator);

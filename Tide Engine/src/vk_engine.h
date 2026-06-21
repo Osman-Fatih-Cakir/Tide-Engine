@@ -5,6 +5,7 @@
 #include "renderer.h"
 #include "ui.h"
 #include "settings.h"
+#include "dlss.h"
 
 // Number of frames the CPU may work ahead of the GPU.
 inline constexpr uint32_t FRAMES_IN_FLIGHT = 2;
@@ -53,6 +54,8 @@ private:
     void recreateSwapchain();
     void createDepthResources();
     void destroyDepthResources();
+    VkExtent2D computeRenderExtent();  // render res from DLSS mode (display res if off)
+    void recreateDlssFeature();        // (re)create the DLSS feature for current sizes
     void initFrames();
     void initProfiler();
     void initImmediate();
@@ -82,7 +85,8 @@ private:
     // --- swapchain ---
     VkSwapchainKHR           m_swapchain      = VK_NULL_HANDLE;
     VkFormat                 m_swapchainFormat = VK_FORMAT_UNDEFINED;
-    VkExtent2D               m_swapchainExtent = {};
+    VkExtent2D               m_swapchainExtent = {};  // display resolution
+    VkExtent2D               m_renderExtent    = {};  // render resolution (<= display with DLSS)
     std::vector<VkImage>     m_swapchainImages;
     std::vector<VkImageView> m_swapchainImageViews;
     // Signalled when rendering to a given swapchain image is done (one per image).
@@ -113,6 +117,11 @@ private:
     // --- debug UI + tunables ---
     Ui       m_ui;
     Settings m_settings;
+
+    // --- DLSS (super resolution) ---
+    Dlss m_dlss;
+    bool m_lastDlssEnabled = true;
+    int  m_lastDlssQuality = -1;
 
     // --- profiling ---
     TracyVkCtx m_tracyCtx = nullptr;

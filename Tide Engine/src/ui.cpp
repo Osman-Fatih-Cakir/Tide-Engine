@@ -130,8 +130,19 @@ void Ui::buildPanel(Settings& s, float dt) {
     ImGui::Checkbox("Denoise (temporal)", &s.shadowDenoise);
     ImGui::SliderFloat("History",  &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
 
-    ImGui::SeparatorText("DLSS / TAA (Faz 6.5)");
-    ImGui::Checkbox("Jitter (TAA)", &s.taaJitter);
+    ImGui::SeparatorText("DLSS (Faz 6.5)");
+    ImGui::Checkbox("DLSS", &s.dlssEnabled);
+    const char* dlssModes[] = {"Performance", "Balanced", "Quality", "Ultra Performance", "DLAA"};
+    ImGui::Combo("DLSS Mode", &s.dlssQuality, dlssModes, IM_ARRAYSIZE(dlssModes));
+    // Live status: confirms whether DLSS is really upscaling.
+    if (!s.dlssAvailable) {
+        ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "Status: NOT AVAILABLE (native)");
+    } else if (s.dlssActive) {
+        ImGui::TextColored(ImVec4(0.4f, 1, 0.4f, 1), "Status: ACTIVE  %ux%u -> %ux%u",
+                           s.renderW, s.renderH, s.displayW, s.displayH);
+    } else {
+        ImGui::TextColored(ImVec4(1, 1, 0.4f, 1), "Status: off (native %ux%u)", s.displayW, s.displayH);
+    }
     ImGui::Checkbox("Debug: motion vectors", &s.debugMotionVecs);
 
     ImGui::SeparatorText("Tonemap");

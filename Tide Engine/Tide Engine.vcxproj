@@ -71,14 +71,14 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>$(VULKAN_SDK)\Include;$(SolutionDir)Dependency\glfw\include;$(SolutionDir)Dependency\imgui;$(SolutionDir)Dependency\imgui\backends;$(SolutionDir)Dependency\tinygltf;$(SolutionDir)Dependency\tracy\public;$(SolutionDir)Dependency\glm;$(SolutionDir)Dependency\stb;$(IncludePath)</IncludePath>
-    <LibraryPath>$(VULKAN_SDK)\Lib;$(SolutionDir)Dependency\glfw\build\src\Debug;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(VULKAN_SDK)\Include;$(SolutionDir)Dependency\glfw\include;$(SolutionDir)Dependency\imgui;$(SolutionDir)Dependency\imgui\backends;$(SolutionDir)Dependency\tinygltf;$(SolutionDir)Dependency\tracy\public;$(SolutionDir)Dependency\glm;$(SolutionDir)Dependency\stb;$(SolutionDir)Dependency\DLSS\include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(VULKAN_SDK)\Lib;$(SolutionDir)Dependency\glfw\build\src\Debug;$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\x64;$(LibraryPath)</LibraryPath>
     <OutDir>$(SolutionDir)\Bin\</OutDir>
     <TargetName>TideEngined</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IncludePath>$(VULKAN_SDK)\Include;$(SolutionDir)Dependency\glfw\include;$(SolutionDir)Dependency\imgui;$(SolutionDir)Dependency\imgui\backends;$(SolutionDir)Dependency\tinygltf;$(SolutionDir)Dependency\tracy\public;$(SolutionDir)Dependency\glm;$(SolutionDir)Dependency\stb;$(IncludePath)</IncludePath>
-    <LibraryPath>$(VULKAN_SDK)\Lib;$(SolutionDir)Dependency\glfw\build\src\Release;$(LibraryPath)</LibraryPath>
+    <IncludePath>$(VULKAN_SDK)\Include;$(SolutionDir)Dependency\glfw\include;$(SolutionDir)Dependency\imgui;$(SolutionDir)Dependency\imgui\backends;$(SolutionDir)Dependency\tinygltf;$(SolutionDir)Dependency\tracy\public;$(SolutionDir)Dependency\glm;$(SolutionDir)Dependency\stb;$(SolutionDir)Dependency\DLSS\include;$(IncludePath)</IncludePath>
+    <LibraryPath>$(VULKAN_SDK)\Lib;$(SolutionDir)Dependency\glfw\build\src\Release;$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\x64;$(LibraryPath)</LibraryPath>
     <OutDir>$(SolutionDir)\Bin\</OutDir>
     <TargetName>TideEngine</TargetName>
   </PropertyGroup>
@@ -121,9 +121,12 @@
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;gdi32.lib;shell32.lib;shaderc_combinedd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;gdi32.lib;shell32.lib;shaderc_combinedd.lib;nvsdk_ngx_d_dbg.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalOptions>/ignore:4099 %(AdditionalOptions)</AdditionalOptions>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -141,9 +144,12 @@
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;gdi32.lib;shell32.lib;shaderc_combined.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vulkan-1.lib;glfw3.lib;gdi32.lib;shell32.lib;shaderc_combined.lib;nvsdk_ngx_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalOptions>/ignore:4099 %(AdditionalOptions)</AdditionalOptions>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
@@ -157,6 +163,7 @@
     <ClCompile Include="src\camera.cpp" />
     <ClCompile Include="src\shader.cpp" />
     <ClCompile Include="src\renderer.cpp" />
+    <ClCompile Include="src\dlss.cpp" />
     <ClCompile Include="src\ui.cpp" />
     <ClCompile Include="..\Dependency\tracy\public\TracyClient.cpp" />
     <ClCompile Include="..\Dependency\imgui\imgui.cpp" />
@@ -178,6 +185,7 @@
     <ClInclude Include="src\camera.h" />
     <ClInclude Include="src\shader.h" />
     <ClInclude Include="src\renderer.h" />
+    <ClInclude Include="src\dlss.h" />
     <ClInclude Include="src\ui.h" />
     <ClInclude Include="src\settings.h" />
   </ItemGroup>

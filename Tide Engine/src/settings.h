@@ -17,8 +17,18 @@ struct Settings {
     float shadowHistAlpha = 0.1f;   // EMA blend (lower = smoother, more lag)
 
     // TAA / DLSS pipeline foundation (Faz 6.5 Aşama A).
-    bool  taaJitter       = false;  // sub-pixel Halton jitter — only useful once DLSS/TAA resolves it
+    bool  taaJitter       = false;  // sub-pixel Halton jitter — auto-forced on when DLSS is active
     bool  debugMotionVecs = false;  // show motion vectors instead of shaded color
+
+    // DLSS Super Resolution (Faz 6.5 Aşama B). Falls back to native if unavailable.
+    bool  dlssEnabled     = true;
+    int   dlssQuality     = 2;      // 0 Perf, 1 Balanced, 2 Quality, 3 UltraPerf, 4 DLAA
+
+    // DLSS runtime status (read-only; filled by the engine for the UI).
+    bool     dlssAvailable = false; // GPU/driver supports DLSS
+    bool     dlssActive    = false; // actually upscaling this frame
+    uint32_t renderW = 0, renderH = 0;   // render resolution
+    uint32_t displayW = 0, displayH = 0; // display resolution
 
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 

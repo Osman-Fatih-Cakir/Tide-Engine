@@ -5,6 +5,7 @@
 
 class VulkanEngine;
 class Scene;
+class Dlss;
 
 // Visibility-buffer renderer (Faz 4). Owns the screen-sized vis (R32_UINT) and
 // HDR (RGBA16F) targets and the three passes:
@@ -17,19 +18,28 @@ public:
     void init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthFormat,
               VkDescriptorSetLayout sceneSetLayout);
 
-    // (Re)create the screen-sized targets; call on init and every resize.
-    void createTargets(VulkanEngine& eng, VkExtent2D extent);
+    // (Re)create the targets. renderExtent sizes vis/hdr/shadow/motion/depth;
+    // displayExtent sizes the DLSS output. Call on init and every resize/mode change.
+    void createTargets(VulkanEngine& eng, VkExtent2D renderExtent, VkExtent2D displayExtent);
     void destroyTargets(VulkanEngine& eng);
 
     void destroy(VulkanEngine& eng);
 
-    // Record the three passes. Leaves the swapchain image in
-    // COLOR_ATTACHMENT_OPTIMAL (the ImGui pass loads it afterwards).
+    // Render-resolution HDR image (DLSS input) so the engine can recreate the
+    // feature against the exact resource. Valid after createTargets.
+    VkExtent2D renderExtent() const { return m_extent; }
+
+    // Record the passes: Visibility -> Resolve -> Transparent -> [DLSS upscale] ->
+    // Tonemap. Passes A-C run at renderExtent; tonemap at displayExtent. When
+    // dlssActive, upscales render-res HDR to display-res before tonemap.
+    // Leaves the swapchain image in COLOR_ATTACHMENT_OPTIMAL.
     void record(VkCommandBuffer cmd, const Scene& scene,
                 const glm::mat4& viewProj, const glm::vec3& cameraPos,
-                const Settings& settings, VkExtent2D extent,
+                const Settings& settings,
+                VkExtent2D renderExtent, VkExtent2D displayExtent,
                 VkImage swapchainImage, VkImageView swapchainView,
                 VkImage depthImage, VkImageView depthView,
+                Dlss* dlss, bool dlssActive,
                 TracyVkCtx tracy);
 
 private:
@@ -43,7 +53,10 @@ private:
     Image      m_hdr{};                 // RGBA16F linear radiance
     Image      m_shadowHist[2]{};       // RG16F temporal shadow: R=visibility, G=linear depth
     Image      m_motion{};              // RG16F screen-space motion vectors (prev - cur UV), for DLSS
-    VkExtent2D m_extent = {};
+    Image      m_dlssOutput{};          // RGBA16F display-res HDR (DLSS upscale target)
+    VkExtent2D m_extent = {};           // render resolution
+    VkExtent2D m_displayExtent = {};
+    bool       m_dlssReset = true;      // drop DLSS temporal history (set on (re)create)
     VkSampler  m_hdrSampler = VK_NULL_HANDLE;
     VkSampler  m_histSampler = VK_NULL_HANDLE;
 
@@ -72,7 +85,8 @@ private:
     VkPipeline            m_tonemapPipeline = VK_NULL_HANDLE;
     VkPipelineLayout      m_tonemapLayout   = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_tonemapSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSet       m_tonemapSet       = VK_NULL_HANDLE;
+    VkDescriptorSet       m_tonemapSet       = VK_NULL_HANDLE; // samples m_hdr (no DLSS)
+    VkDescriptorSet       m_tonemapSetDlss   = VK_NULL_HANDLE; // samples m_dlssOutput
 
     VkDescriptorPool m_pool = VK_NULL_HANDLE;
 };

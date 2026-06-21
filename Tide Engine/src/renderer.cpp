@@ -3,6 +3,7 @@
 #include "scene.h"
 #include "shader.h"
 #include "mesh.h"
+#include "dlss.h"
 #include <cstddef>   // offsetof
 #include <algorithm> // sort
 #include <vector>
@@ -182,10 +183,10 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         sizes[0].descriptorCount = 8;  // 2 resolve sets * (vis + hdr + histWrite + motion)
         sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sizes[1].descriptorCount = 3;  // tonemap (hdr) + 2 resolve sets (histRead)
+        sizes[1].descriptorCount = 4;  // 2 tonemap (hdr/dlss) + 2 resolve sets (histRead)
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pci.maxSets = 3;
+        pci.maxSets = 4;
         pci.poolSizeCount = 2;
         pci.pPoolSizes = sizes;
         VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_pool));
@@ -199,6 +200,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_resolveSet[1]));
         dai.pSetLayouts = &m_tonemapSetLayout;
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_tonemapSet));
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_tonemapSetDlss));
     }
 
     // ---- Visibility pipeline (raster, position-only vertex input) ----
@@ -509,9 +511,11 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     }
 }
 
-void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
+void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D displayExtent) {
     destroyTargets(eng);
     m_extent = extent;
+    m_displayExtent = displayExtent;
+    m_dlssReset = true; // history is invalid after (re)creating resources
 
     m_vis = makeImage(eng, VK_FORMAT_R32_UINT,
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
@@ -528,6 +532,12 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
     m_motion = makeImage(eng, VK_FORMAT_R16G16_SFLOAT,
                          VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                          extent, VK_IMAGE_ASPECT_COLOR_BIT, "Motion Vectors");
+    // DLSS upscale target (display resolution). STORAGE so NGX can write it;
+    // TRANSFER_DST because NGX clears it internally.
+    m_dlssOutput = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
+                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                             displayExtent, VK_IMAGE_ASPECT_COLOR_BIT, "DLSS Output");
 
     // Initialize both history images to GENERAL so the per-frame "read = GENERAL ->
     // SHADER_READ" barrier is always valid (first frame forces a history reset).
@@ -563,6 +573,10 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
     hdrSamp.sampler = m_hdrSampler;
     hdrSamp.imageView = m_hdr.view;
     hdrSamp.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo dlssSamp{};
+    dlssSamp.sampler = m_hdrSampler;
+    dlssSamp.imageView = m_dlssOutput.view;
+    dlssSamp.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     std::vector<VkWriteDescriptorSet> w;
     auto add = [&](VkDescriptorSet set, uint32_t bind, VkDescriptorType t,
@@ -581,6 +595,7 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
         add(m_resolveSet[k], 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &motionStore);
     }
     add(m_tonemapSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrSamp);
+    add(m_tonemapSetDlss, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &dlssSamp);
     vkUpdateDescriptorSets(eng.device(), (uint32_t)w.size(), w.data(), 0, nullptr);
 }
 
@@ -590,6 +605,7 @@ void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_shadowHist[0]);
     destroyImage(eng.allocator(), eng.device(), m_shadowHist[1]);
     destroyImage(eng.allocator(), eng.device(), m_motion);
+    destroyImage(eng.allocator(), eng.device(), m_dlssOutput);
 }
 
 void Renderer::destroy(VulkanEngine& eng) {
@@ -615,10 +631,13 @@ void Renderer::destroy(VulkanEngine& eng) {
 // ---------------------------------------------------------------------------
 void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                       const glm::mat4& viewProj, const glm::vec3& cameraPos,
-                      const Settings& settings, VkExtent2D extent,
+                      const Settings& settings,
+                      VkExtent2D renderExtent, VkExtent2D displayExtent,
                       VkImage swapchainImage, VkImageView swapchainView,
                       VkImage depthImage, VkImageView depthView,
+                      Dlss* dlss, bool dlssActive,
                       TracyVkCtx tracy) {
+    VkExtent2D extent = renderExtent; // passes A-C run at render resolution
     VkViewport vp{};
     vp.width = (float)extent.width;
     vp.height = (float)extent.height;
@@ -633,9 +652,11 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
     // use the jittered matrix; motion vectors are computed unjittered (see resolve.comp,
     // which removes jitter.xy from the current UV). prevViewProj stays unjittered.
     glm::vec2 jitterNDC(0.0f);
-    if (settings.taaJitter) {
+    glm::vec2 jitterPixels(0.0f); // render-pixel space, for DLSS
+    if (settings.taaJitter || dlssActive) {
         float jx = halton((frame & 1023u) + 1u, 2u) - 0.5f;
         float jy = halton((frame & 1023u) + 1u, 3u) - 0.5f;
+        jitterPixels = glm::vec2(jx, jy);
         jitterNDC = glm::vec2(2.0f * jx / (float)extent.width,
                               2.0f * jy / (float)extent.height);
     }
@@ -864,21 +885,62 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         m_eng->cmdEndLabel(cmd);
     }
 
-    // ===================== Pass D: Tonemap (HDR -> swapchain) =====================
+    // HDR source state after the (optional) transparent pass.
+    VkPipelineStageFlags2 hdrStage = hasTransparent
+        ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    VkAccessFlags2 hdrAccess = hasTransparent
+        ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    VkImageLayout hdrOld = hasTransparent
+        ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+
+    // ===================== Pass D0: DLSS upscale (render-res HDR -> display-res) =====================
+    // The tonemap then reads m_dlssOutput. NGX expects all resources in GENERAL.
+    if (dlssActive && dlss) {
+        TracyVkZone(tracy, cmd, "DLSS");
+        m_eng->cmdBeginLabel(cmd, "DLSS Upscale");
+        imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   hdrStage, hdrAccess,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                   hdrOld, VK_IMAGE_LAYOUT_GENERAL);
+        imgBarrier(cmd, depthImage, VK_IMAGE_ASPECT_DEPTH_BIT,
+                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                   VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+        imgBarrier(cmd, m_motion.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+        imgBarrier(cmd, m_dlssOutput.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
+        dlss->evaluate(cmd, m_hdr.image, m_hdr.view, depthImage, depthView,
+                       m_motion.image, m_motion.view, m_dlssOutput.image, m_dlssOutput.view,
+                       renderExtent, jitterPixels, m_dlssReset);
+        m_dlssReset = false;
+        m_eng->cmdEndLabel(cmd);
+    }
+
+    // ===================== Pass D: Tonemap (HDR -> swapchain, display res) =====================
     {
         TracyVkZone(tracy, cmd, "Tonemap");
         m_eng->cmdBeginLabel(cmd, "Tonemap Pass");
-        // HDR source layout/stage depends on whether the transparent pass ran.
-        VkPipelineStageFlags2 hdrStage = hasTransparent
-            ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-        VkAccessFlags2 hdrAccess = hasTransparent
-            ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-        VkImageLayout hdrOld = hasTransparent
-            ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
-        imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                   hdrStage, hdrAccess,
-                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                   hdrOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        VkDescriptorSet tonemapSet = m_tonemapSet;
+        if (dlssActive && dlss) {
+            // DLSS output (NGX wrote it, GENERAL) -> sampled by tonemap.
+            imgBarrier(cmd, m_dlssOutput.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            tonemapSet = m_tonemapSetDlss;
+        } else {
+            imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       hdrStage, hdrAccess,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       hdrOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
         imgBarrier(cmd, swapchainImage, VK_IMAGE_ASPECT_COLOR_BIT,
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -893,17 +955,23 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
 
         VkRenderingInfo ri{};
         ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        ri.renderArea.extent = extent;
+        ri.renderArea.extent = displayExtent;
         ri.layerCount = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments = &color;
         vkCmdBeginRendering(cmd, &ri);
 
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        VkViewport vpD{};
+        vpD.width = (float)displayExtent.width;
+        vpD.height = (float)displayExtent.height;
+        vpD.maxDepth = 1.0f;
+        VkRect2D scissorD{};
+        scissorD.extent = displayExtent;
+        vkCmdSetViewport(cmd, 0, 1, &vpD);
+        vkCmdSetScissor(cmd, 0, 1, &scissorD);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapLayout,
-                                0, 1, &m_tonemapSet, 0, nullptr);
+                                0, 1, &tonemapSet, 0, nullptr);
         TonemapPush tp{settings.exposure};
         vkCmdPushConstants(cmd, m_tonemapLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(TonemapPush), &tp);
