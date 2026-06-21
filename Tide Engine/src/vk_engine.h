@@ -71,6 +71,7 @@ private:
     uint32_t    m_height           = 900;
     bool        m_framebufferResized = false;
     bool        m_lastVsync          = true;  // tracks present-mode changes from UI
+    float       m_lastCpuMs          = 0.0f;  // measured CPU work time (excl. VSync idle)
 
     // --- core ---
     VkInstance               m_instance       = VK_NULL_HANDLE;

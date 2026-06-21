@@ -108,8 +108,8 @@ void VulkanEngine::run() {
         double dt = std::chrono::duration<double>(now - last).count();
         last = now;
 
-        glfwPollEvents();
-        m_camera.update(m_window, (float)dt);
+        { ZoneScopedN("Poll Events"); glfwPollEvents(); }
+        { ZoneScopedN("Camera Update"); m_camera.update(m_window, (float)dt); }
         drawFrame((float)dt);
 
         FrameMark; // Tracy CPU frame boundary
@@ -362,8 +362,8 @@ void VulkanEngine::createSwapchain() {
     }
     m_swapchainFormat = chosen.format;
 
-    // Present mode. VSync on -> FIFO (always available). VSync off -> prefer
-    // MAILBOX (low-latency, no tearing), else IMMEDIATE, else FIFO.
+    // Present mode. VSync on -> FIFO (hard-locks to refresh; ship with this).
+    // VSync off -> IMMEDIATE (truly uncapped, may tear; for profiling/optimization).
     uint32_t pcount = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &pcount, nullptr);
     std::vector<VkPresentModeKHR> modes(pcount);
@@ -374,8 +374,8 @@ void VulkanEngine::createSwapchain() {
     };
     VkPresentModeKHR present = VK_PRESENT_MODE_FIFO_KHR;
     if (!m_settings.vsync) {
-        if (hasMode(VK_PRESENT_MODE_MAILBOX_KHR))         present = VK_PRESENT_MODE_MAILBOX_KHR;
-        else if (hasMode(VK_PRESENT_MODE_IMMEDIATE_KHR))  present = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        if (hasMode(VK_PRESENT_MODE_IMMEDIATE_KHR))     present = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        else if (hasMode(VK_PRESENT_MODE_MAILBOX_KHR))  present = VK_PRESENT_MODE_MAILBOX_KHR; // fallback
     }
     m_lastVsync = m_settings.vsync;
 
@@ -649,6 +649,7 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
         if (m_scene.indexCount > 0) {
             float aspect = (float)m_renderExtent.width / (float)m_renderExtent.height;
             glm::mat4 viewProj = m_camera.proj(aspect) * m_camera.view();
+            ZoneScopedN("Renderer Record");
             bool dlssActive = m_dlss.available() && m_settings.dlssEnabled && m_dlss.hasFeature();
             m_settings.dlssAvailable = m_dlss.available();
             m_settings.dlssActive = dlssActive;
@@ -709,9 +710,12 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
         uiRi.colorAttachmentCount = 1;
         uiRi.pColorAttachments = &uiColor;
 
-        vkCmdBeginRendering(cmd, &uiRi);
-        m_ui.render(cmd);
-        vkCmdEndRendering(cmd);
+        {
+            TracyVkZone(m_tracyCtx, cmd, "ImGui");
+            vkCmdBeginRendering(cmd, &uiRi);
+            { ZoneScopedN("ImGui Record"); m_ui.render(cmd); }
+            vkCmdEndRendering(cmd);
+        }
 
         // COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC
         VkImageMemoryBarrier2 toPresent{};
@@ -751,24 +755,34 @@ void VulkanEngine::drawFrame(float dt) {
 
     FrameData& frame = m_frames[m_currentFrame];
 
-    VK_CHECK(vkWaitForFences(m_device, 1, &frame.inFlight, VK_TRUE, UINT64_MAX));
+    { ZoneScopedN("Wait Fence (GPU sync)");
+      VK_CHECK(vkWaitForFences(m_device, 1, &frame.inFlight, VK_TRUE, UINT64_MAX)); }
 
     uint32_t imageIndex = 0;
-    VkResult acq = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
-                                         frame.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+    VkResult acq;
+    { ZoneScopedN("Acquire Image");
+      acq = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
+                                  frame.imageAvailable, VK_NULL_HANDLE, &imageIndex); }
     if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapchain();
         return;
     }
     if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) VK_CHECK(acq);
 
+    // Measure CPU work time (UI build + record + submit) — excludes the fence
+    // wait / acquire / present idle, so the graph shows real engine cost, not
+    // VSync-padded wall clock.
+    auto cpuStart = std::chrono::high_resolution_clock::now();
+
     // Build the UI only once we know we'll render this frame.
-    m_ui.beginFrame();
-    m_ui.buildPanel(m_settings, dt);
+    { ZoneScopedN("ImGui Build");
+      m_ui.beginFrame();
+      m_ui.buildPanel(m_settings, dt, m_lastCpuMs); } // displays previous frame's CPU ms
 
     VK_CHECK(vkResetFences(m_device, 1, &frame.inFlight));
     VK_CHECK(vkResetCommandPool(m_device, frame.pool, 0));
-    recordCommands(frame.cmd, imageIndex);
+    { ZoneScopedN("Record Commands");
+      recordCommands(frame.cmd, imageIndex); }
 
     VkCommandBufferSubmitInfo cmdInfo{};
     cmdInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -792,7 +806,12 @@ void VulkanEngine::drawFrame(float dt) {
     submit.pCommandBufferInfos = &cmdInfo;
     submit.signalSemaphoreInfoCount = 1;
     submit.pSignalSemaphoreInfos = &signal;
-    VK_CHECK(vkQueueSubmit2(m_queue, 1, &submit, frame.inFlight));
+    { ZoneScopedN("Queue Submit");
+      VK_CHECK(vkQueueSubmit2(m_queue, 1, &submit, frame.inFlight)); }
+
+    // CPU work done (recording side). Present below is the VSync block — excluded.
+    auto cpuEnd = std::chrono::high_resolution_clock::now();
+    m_lastCpuMs = std::chrono::duration<float, std::milli>(cpuEnd - cpuStart).count();
 
     VkPresentInfoKHR present{};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -802,7 +821,8 @@ void VulkanEngine::drawFrame(float dt) {
     present.pSwapchains = &m_swapchain;
     present.pImageIndices = &imageIndex;
 
-    VkResult pres = vkQueuePresentKHR(m_queue, &present);
+    VkResult pres;
+    { ZoneScopedN("Present"); pres = vkQueuePresentKHR(m_queue, &present); }
     if (pres == VK_ERROR_OUT_OF_DATE_KHR || pres == VK_SUBOPTIMAL_KHR ||
         m_framebufferResized || m_settings.vsync != m_lastVsync) {
         m_framebufferResized = false;

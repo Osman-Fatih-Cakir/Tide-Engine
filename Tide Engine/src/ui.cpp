@@ -62,30 +62,32 @@ void Ui::beginFrame() {
     ImGui::NewFrame();
 }
 
-void Ui::buildPanel(Settings& s, float dt) {
-    // Accumulate stats; refresh the displayed numbers once per second.
+void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
+    // Real frame time (dt) drives the FPS + graph; CPU work time (cpuMs) is a
+    // separate readout. Refresh displayed numbers once per real second.
     m_acc += dt;
     m_frames++;
-    m_maxDt = std::max(m_maxDt, dt);
+    m_realMax = std::max(m_realMax, dt);
+    m_cpuAcc += cpuMs;
     if (m_acc >= 1.0f) {
-        m_dispAvgMs = (m_acc / m_frames) * 1000.0f;
-        m_dispMaxMs = m_maxDt * 1000.0f;
+        m_dispAvgMs = (m_frames > 0) ? (m_acc / m_frames) * 1000.0f : 0.0f;
+        m_dispMaxMs = m_realMax * 1000.0f;
+        m_dispCpuMs = (m_frames > 0) ? (m_cpuAcc / m_frames) : 0.0f;
         m_acc = 0.0f;
         m_frames = 0;
-        m_maxDt = 0.0f;
+        m_realMax = 0.0f;
+        m_cpuAcc = 0.0f;
     }
     float avgFps = m_dispAvgMs > 0.0f ? 1000.0f / m_dispAvgMs : 0.0f;
     float maxFps = m_dispMaxMs > 0.0f ? 1000.0f / m_dispMaxMs : 0.0f;
 
-    // Feed the plot at a fixed rate (s.frameGraphHz samples/sec): accumulate,
-    // emit one averaged point per window so the graph scrolls at a readable,
-    // FPS-independent pace.
+    // Plot the real frame time (actual frame rate) at a fixed sample rate.
     int hz = s.frameGraphHz > 0 ? s.frameGraphHz : 1;
     float sampleInterval = 1.0f / (float)hz;
     m_plotAcc += dt;
     m_plotFrames++;
     if (m_plotAcc >= sampleInterval) {
-        m_msHistory[m_msHead] = (m_plotAcc / m_plotFrames) * 1000.0f;
+        m_msHistory[m_msHead] = (m_plotFrames > 0) ? (m_plotAcc / m_plotFrames) * 1000.0f : 0.0f;
         m_msHead = (m_msHead + 1) % kHistory;
         m_plotAcc = 0.0f;
         m_plotFrames = 0;
@@ -101,13 +103,15 @@ void Ui::buildPanel(Settings& s, float dt) {
     ImGui::Begin("Tide Engine", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
-    ImGui::Text("Avg: %.2f ms  (%.0f FPS)", m_dispAvgMs, avgFps);
-    ImGui::SetItemTooltip("Average frame time over the last second.");
+    ImGui::Text("%.2f ms  (%.0f FPS)", m_dispAvgMs, avgFps);
+    ImGui::SetItemTooltip("Actual frame time / on-screen FPS (VSync-capped).");
     ImGui::Text("Max: %.2f ms  (%.0f FPS)", m_dispMaxMs, maxFps);
     ImGui::SetItemTooltip("Slowest frame in the last second (worst-case).");
+    ImGui::Text("CPU: %.2f ms", m_dispCpuMs);
+    ImGui::SetItemTooltip("Engine CPU work/frame (excludes VSync idle) = headroom.");
 
     ImGui::Checkbox("VSync", &s.vsync);
-    ImGui::SetItemTooltip("On: FIFO (no tearing). Off: MAILBOX/IMMEDIATE (uncapped).");
+    ImGui::SetItemTooltip("On: FIFO (locked to refresh). Off: IMMEDIATE (uncapped, may tear).");
     ImGui::Checkbox("Frame graph", &s.showFrameGraph);
     ImGui::SetNextItemWidth(150.0f);
     ImGui::SliderInt("Graph Hz", &s.frameGraphHz, 1, 60);
