@@ -42,6 +42,7 @@ private:
     Image      m_vis{};                 // R32_UINT packed (instanceID<<20 | primID)
     Image      m_hdr{};                 // RGBA16F linear radiance
     Image      m_shadowHist[2]{};       // RG16F temporal shadow: R=visibility, G=linear depth
+    Image      m_motion{};              // RG16F screen-space motion vectors (prev - cur UV), for DLSS
     VkExtent2D m_extent = {};
     VkSampler  m_hdrSampler = VK_NULL_HANDLE;
     VkSampler  m_histSampler = VK_NULL_HANDLE;

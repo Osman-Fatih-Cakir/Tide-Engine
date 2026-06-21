@@ -130,6 +130,10 @@ void Ui::buildPanel(Settings& s, float dt) {
     ImGui::Checkbox("Denoise (temporal)", &s.shadowDenoise);
     ImGui::SliderFloat("History",  &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
 
+    ImGui::SeparatorText("DLSS / TAA (Faz 6.5)");
+    ImGui::Checkbox("Jitter (TAA)", &s.taaJitter);
+    ImGui::Checkbox("Debug: motion vectors", &s.debugMotionVecs);
+
     ImGui::SeparatorText("Tonemap");
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 5.0f);
     ImGui::PopItemWidth();

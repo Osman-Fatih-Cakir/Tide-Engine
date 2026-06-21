@@ -24,6 +24,7 @@ struct ResolvePush {
     glm::vec4  sunColor;   // rgb = radiance
     glm::vec4  shadowCfg;  // ray-traced shadow config
     glm::vec4  temporal;   // x=reset y=histAlpha z=denoiseOn
+    glm::vec4  jitter;     // xy = current jitter in NDC, z = debugMotion flag
     glm::uvec2 screenSize;
 };
 struct TonemapPush {
@@ -37,6 +38,13 @@ struct TransparentPush {
     glm::vec4 sunColor;
     glm::vec4 shadowCfg;
 };
+
+// Halton low-discrepancy sequence (radical inverse), for sub-pixel TAA/DLSS jitter.
+static float halton(uint32_t i, uint32_t base) {
+    float f = 1.0f, r = 0.0f;
+    while (i > 0) { f /= (float)base; r += f * (float)(i % base); i /= base; }
+    return r;
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers.
@@ -128,7 +136,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
 
     // ---- Descriptor set layouts (resolve set1, tonemap set0) ----
     {
-        VkDescriptorSetLayoutBinding b[4]{};
+        VkDescriptorSetLayoutBinding b[5]{};
         b[0].binding = 0; // vis storage image (read)
         b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[0].descriptorCount = 1;
@@ -145,9 +153,13 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[3].descriptorCount = 1;
         b[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[4].binding = 4; // motion vectors (write, storage)
+        b[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[4].descriptorCount = 1;
+        b[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 4;
+        lci.bindingCount = 5;
         lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_resolveSetLayout));
     }
@@ -168,7 +180,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     {
         VkDescriptorPoolSize sizes[2]{};
         sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        sizes[0].descriptorCount = 6;  // 2 resolve sets * (vis + hdr + histWrite)
+        sizes[0].descriptorCount = 8;  // 2 resolve sets * (vis + hdr + histWrite + motion)
         sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sizes[1].descriptorCount = 3;  // tonemap (hdr) + 2 resolve sets (histRead)
         VkDescriptorPoolCreateInfo pci{};
@@ -513,6 +525,9 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
                                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                                     extent, VK_IMAGE_ASPECT_COLOR_BIT,
                                     i == 0 ? "Shadow Hist 0" : "Shadow Hist 1");
+    m_motion = makeImage(eng, VK_FORMAT_R16G16_SFLOAT,
+                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                         extent, VK_IMAGE_ASPECT_COLOR_BIT, "Motion Vectors");
 
     // Initialize both history images to GENERAL so the per-frame "read = GENERAL ->
     // SHADER_READ" barrier is always valid (first frame forces a history reset).
@@ -541,6 +556,9 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
         histStore[i].imageView = m_shadowHist[i].view;
         histStore[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     }
+    VkDescriptorImageInfo motionStore{};
+    motionStore.imageView = m_motion.view;
+    motionStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkDescriptorImageInfo hdrSamp{};
     hdrSamp.sampler = m_hdrSampler;
     hdrSamp.imageView = m_hdr.view;
@@ -560,6 +578,7 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent) {
         add(m_resolveSet[k], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &hdrStore);
         add(m_resolveSet[k], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &histSamp[1 - k]);
         add(m_resolveSet[k], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &histStore[k]);
+        add(m_resolveSet[k], 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &motionStore);
     }
     add(m_tonemapSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrSamp);
     vkUpdateDescriptorSets(eng.device(), (uint32_t)w.size(), w.data(), 0, nullptr);
@@ -570,6 +589,7 @@ void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_hdr);
     destroyImage(eng.allocator(), eng.device(), m_shadowHist[0]);
     destroyImage(eng.allocator(), eng.device(), m_shadowHist[1]);
+    destroyImage(eng.allocator(), eng.device(), m_motion);
 }
 
 void Renderer::destroy(VulkanEngine& eng) {
@@ -606,13 +626,34 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
     VkRect2D scissor{};
     scissor.extent = extent;
 
+    uint32_t frame = m_frameIndex++;
+
+    // Sub-pixel TAA/DLSS jitter: shift the projection by a Halton offset in [-0.5,0.5]
+    // pixels, expressed in NDC (clip range is 2). The raster + resolve reconstruction
+    // use the jittered matrix; motion vectors are computed unjittered (see resolve.comp,
+    // which removes jitter.xy from the current UV). prevViewProj stays unjittered.
+    glm::vec2 jitterNDC(0.0f);
+    if (settings.taaJitter) {
+        float jx = halton((frame & 1023u) + 1u, 2u) - 0.5f;
+        float jy = halton((frame & 1023u) + 1u, 3u) - 0.5f;
+        jitterNDC = glm::vec2(2.0f * jx / (float)extent.width,
+                              2.0f * jy / (float)extent.height);
+    }
+    // Add jx*clip.w to clip.x (and jy to .y) so the shift is constant in NDC/pixels:
+    // row0 += jx * row3, row1 += jy * row3 (glm column-major: element [col][row]).
+    glm::mat4 jitteredVP = viewProj;
+    for (int c = 0; c < 4; c++) {
+        jitteredVP[c][0] += jitterNDC.x * jitteredVP[c][3];
+        jitteredVP[c][1] += jitterNDC.y * jitteredVP[c][3];
+    }
+
     // Ray-traced shadow config (shared by resolve + transparent passes).
     glm::vec3 sun = sunDirection(settings);
     glm::vec4 shadowCfg(
         glm::radians(settings.sunAngularSize),               // sun cone half-angle (rad)
         settings.shadowsEnabled ? (float)settings.shadowSamples : 0.0f,
         settings.shadowsEnabled ? 1.0f : 0.0f,
-        (float)(m_frameIndex++ & 0xFFFF));                   // frame index for dither
+        (float)(frame & 0xFFFF));                             // frame index for dither
 
     // Temporal shadow denoise state. Reset history when it's the first frame, the
     // sun moved (shadows changed), or denoise is off.
@@ -675,7 +716,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
             const MeshInstance& inst = scene.instances[instID];
             const Geometry& g = scene.geometries[inst.geometryID];
             VisPush push{};
-            push.viewProj = viewProj;
+            push.viewProj = jitteredVP;
             push.model = inst.transform;
             push.drawID = instID; // packed into the visibility ID
             vkCmdPushConstants(cmd, m_visLayout,
@@ -708,6 +749,11 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        // Motion vectors: fully overwritten each frame.
+        imgBarrier(cmd, m_motion.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_resolvePipeline);
         VkDescriptorSet sets[2] = {scene.descriptorSet, m_resolveSet[cur]};
@@ -715,13 +761,14 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                                 0, 2, sets, 0, nullptr);
 
         ResolvePush push{};
-        push.viewProj = viewProj;
-        push.prevViewProj = m_prevViewProj;
+        push.viewProj = jitteredVP;          // reconstruction must match the jittered raster
+        push.prevViewProj = m_prevViewProj;  // unjittered previous frame
         push.cameraPos = glm::vec4(cameraPos, 1.0f);
         push.sunDir = glm::vec4(sun, settings.ambient);
         push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
         push.shadowCfg = shadowCfg;
         push.temporal = temporal;
+        push.jitter = glm::vec4(jitterNDC, settings.debugMotionVecs ? 1.0f : 0.0f, 0.0f);
         push.screenSize = glm::uvec2(extent.width, extent.height);
         vkCmdPushConstants(cmd, m_resolveLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(ResolvePush), &push);
@@ -802,7 +849,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
             const MeshInstance& inst = scene.instances[instID];
             const Geometry& g = scene.geometries[inst.geometryID];
             TransparentPush push{};
-            push.viewProj = viewProj;
+            push.viewProj = jitteredVP; // match the jittered opaque depth
             push.model = inst.transform;
             push.cameraPos = glm::vec4(cameraPos, (float)g.materialIndex);
             push.sunDir = glm::vec4(sun, settings.ambient);

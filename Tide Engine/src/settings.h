@@ -5,7 +5,7 @@
 struct Settings {
     float sunAzimuthDeg   = 193.0f;
     float sunElevationDeg = 28.0f;
-    float ambient         = 0.66f;
+    float ambient         = 0.33f;
     float sunIntensity    = 4.0f;  // directional sun radiance multiplier
     float exposure        = 1.0f;  // tonemap exposure
 
@@ -15,6 +15,10 @@ struct Settings {
     int   shadowSamples   = 4;      // rays per pixel (1 = hard shadow)
     bool  shadowDenoise   = true;   // temporal accumulation of the shadow term
     float shadowHistAlpha = 0.1f;   // EMA blend (lower = smoother, more lag)
+
+    // TAA / DLSS pipeline foundation (Faz 6.5 Aşama A).
+    bool  taaJitter       = false;  // sub-pixel Halton jitter — only useful once DLSS/TAA resolves it
+    bool  debugMotionVecs = false;  // show motion vectors instead of shaded color
 
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 

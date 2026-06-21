@@ -50,6 +50,7 @@ layout(r32ui, set = 1, binding = 0) uniform readonly uimage2D visImage;
 layout(rgba16f, set = 1, binding = 1) uniform writeonly image2D hdrImage;
 layout(set = 1, binding = 2) uniform sampler2D shadowHistRead;     // R=visibility, G=linear depth
 layout(rg16f, set = 1, binding = 3) uniform writeonly image2D shadowHistWrite;
+layout(rg16f, set = 1, binding = 4) uniform writeonly image2D motionImage; // prevUV - curUV (for DLSS)
 
 layout(push_constant) uniform Push {
     mat4  viewProj;
@@ -59,6 +60,7 @@ layout(push_constant) uniform Push {
     vec4  sunColor;      // rgb = radiance
     vec4  shadowCfg;     // x=sunConeRad y=samples z=shadowsOn w=frameIndex
     vec4  temporal;      // x=reset y=histAlpha z=denoiseOn
+    vec4  jitter;        // xy = current jitter in NDC, z = debugMotion flag
     uvec2 screenSize;
 } pc;
 
@@ -85,6 +87,8 @@ void main() {
     if (v == 0xFFFFFFFFu) {
         imageStore(hdrImage, pix, vec4(0.02, 0.03, 0.05, 1.0)); // empty -> dim sky
         imageStore(shadowHistWrite, pix, vec4(1.0, 1e6, 0.0, 0.0)); // lit + far depth
+        imageStore(motionImage, pix, vec4(0.0));                    // sky: no motion
+        if (pc.jitter.z > 0.5) imageStore(hdrImage, pix, vec4(0.5, 0.5, 0.0, 1.0));
         return;
     }
 
@@ -204,6 +208,24 @@ void main() {
         }
     }
     imageStore(shadowHistWrite, pix, vec4(shadow, curW, 0.0, 0.0));
+
+    // ----- Motion vectors (prevUV - curUV). Static scene -> camera-only. -----
+    // curUV is this pixel's screen position (pixel center, unjittered). prevUV comes
+    // from the unjittered previous view-proj. DLSS reads history along this vector.
+    vec2 motion = vec2(0.0);
+    {
+        vec4 pp = pc.prevViewProj * vec4(worldPos, 1.0);
+        if (pp.w > 0.0) {
+            vec2 prevUV = (pp.xy / pp.w) * 0.5 + 0.5;
+            motion = prevUV - uv;
+        }
+    }
+    imageStore(motionImage, pix, vec4(motion, 0.0, 0.0));
+
+    if (pc.jitter.z > 0.5) {           // debug: visualize motion (R/G = x/y flow)
+        imageStore(hdrImage, pix, vec4(motion * 20.0 + 0.5, 0.5, 1.0));
+        return;
+    }
 
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb) * shadow;
     color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO (real GI in Faz 7)
