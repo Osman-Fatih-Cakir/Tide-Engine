@@ -182,6 +182,7 @@
     <ClInclude Include="src\settings.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="..\shaders\rtshadow.glsl" />
     <None Include="..\shaders\vis.vert" />
     <None Include="..\shaders\vis.frag" />
     <None Include="..\shaders\resolve.comp" />

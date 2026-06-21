@@ -85,7 +85,7 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
     boundsMax = data.boundsMax;
 
     // Ray-tracing acceleration structure (BLAS-per-draw + TLAS) for shadow rays.
-    buildSceneAccel(eng, *this, data);
+    buildSceneAccel(eng, *this);
 
     buildTexturesAndDescriptors(eng, data);
 
@@ -138,14 +138,16 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
     for (uint32_t i = 0; i < 6; i++) {
         bindings[i].binding = i;
         bindings[i].descriptorCount = 1;
-        // The transparent forward frag also reads all of these (PBR + RT shadow
-        // alpha test reconstructs triangles + samples the TLAS).
-        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     }
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = arrayCount;
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    // Transparent forward frag reads materials (b0), textures (b1) and the TLAS (b5).
+    bindings[0].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[5].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorBindingFlags flags[6] = {
         0,

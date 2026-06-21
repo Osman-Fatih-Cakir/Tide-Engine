@@ -1,7 +1,6 @@
 #version 460
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : require
-#extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_ray_query : require
 
 #include "pbr.glsl"
@@ -27,20 +26,9 @@ struct GpuMaterial {
     int   pad1;
     int   pad2;
 };
-struct Vertex { vec3 position; vec3 normal; vec2 uv; vec4 tangent; };
-struct GpuDraw {
-    mat4 transform;
-    uint firstIndex;
-    uint vertexOffset;
-    uint materialIndex;
-    uint pad;
-};
 
 layout(std430, set = 0, binding = 0) readonly buffer Materials { GpuMaterial materials[]; };
 layout(set = 0, binding = 1) uniform sampler2D textures[];
-layout(scalar, set = 0, binding = 2) readonly buffer Vertices { Vertex vertices[]; };
-layout(std430, set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
-layout(scalar, set = 0, binding = 4) readonly buffer Draws { GpuDraw draws[]; };
 layout(set = 0, binding = 5) uniform accelerationStructureEXT topLevelAS;
 
 layout(push_constant) uniform Push {

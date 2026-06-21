@@ -1,8 +1,8 @@
 // Ray-traced sun shadow, shared by resolve.comp and transparent.frag.
-// Requires these to be declared by the includer (scene set 0):
+// All occluders are opaque (transparent geometry is excluded from the TLAS), so
+// the ray query auto-commits the first hit — no candidate loop, no alpha test.
+// Requires (declared by the includer, scene set 0):
 //   accelerationStructureEXT topLevelAS;     (b5)
-//   GpuMaterial materials[]; sampler2D textures[];
-//   Vertex vertices[]; uint indices[]; GpuDraw draws[];
 // Needs: #extension GL_EXT_ray_query : require
 #ifndef RTSHADOW_GLSL
 #define RTSHADOW_GLSL
@@ -14,27 +14,15 @@ float rtHash(inout uint s) {
     return float((w >> 22u) ^ w) / 4294967295.0;
 }
 
-// At a candidate triangle hit, decide whether it actually blocks light.
-// OPAQUE/BLEND occluders block fully (glass is masked out by the ray cull mask,
-// so a BLEND triangle only reaches here if explicitly included); MASK occluders
-// block only where baseColor.a >= cutoff (holes let light through).
-bool rtBlocks(uint drawID, uint primID, vec2 bary) {
-    GpuDraw d = draws[drawID];
-    GpuMaterial m = materials[d.materialIndex];
-    if (m.alphaMode != 1) return true; // not MASK -> solid occluder
-
-    uint base = d.firstIndex + primID * 3u;
-    uint i0 = indices[base + 0u] + d.vertexOffset;
-    uint i1 = indices[base + 1u] + d.vertexOffset;
-    uint i2 = indices[base + 2u] + d.vertexOffset;
-    vec2 uv = vertices[i0].uv * (1.0 - bary.x - bary.y)
-            + vertices[i1].uv * bary.x
-            + vertices[i2].uv * bary.y;
-
-    float a = m.baseColorFactor.a;
-    if (m.baseColorTexture >= 0)
-        a *= textureLod(textures[nonuniformEXT(m.baseColorTexture)], uv, 0.0).a;
-    return a >= m.alphaCutoff;
+// True if the ray from origin in dir hits any opaque occluder within [tMin,tMax].
+bool rtOccluded(vec3 origin, vec3 dir) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, topLevelAS,
+                          gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                          0xFFu, origin, 1e-3, dir, 1e4);
+    rayQueryProceedEXT(rq); // opaque -> commits the first hit, no candidate handling
+    return rayQueryGetIntersectionTypeEXT(rq, true) !=
+           gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
 // Returns sun visibility in [0,1]. coneHalfAngle in radians (0 = hard shadow).
@@ -57,28 +45,11 @@ float traceSunShadow(vec3 P, vec3 N, vec3 L, float coneHalfAngle,
     for (int s = 0; s < n; s++) {
         vec3 dir = L;
         if (tanA > 0.0 && n > 1) {
-            // Uniform disk sample -> perturb the direction within the cone.
             float r = sqrt(rtHash(seed)) * tanA;
             float ph = 6.2831853 * rtHash(seed);
             dir = normalize(L + (T * (r * cos(ph)) + B * (r * sin(ph))));
         }
-
-        rayQueryEXT rq;
-        rayQueryInitializeEXT(rq, topLevelAS, gl_RayFlagsTerminateOnFirstHitEXT,
-                              0x01u, origin, 1e-3, dir, 1e4);
-        while (rayQueryProceedEXT(rq)) {
-            if (rayQueryGetIntersectionTypeEXT(rq, false) ==
-                gl_RayQueryCandidateIntersectionTriangleEXT) {
-                uint drawID = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, false));
-                uint primID = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, false));
-                vec2 bary  = rayQueryGetIntersectionBarycentricsEXT(rq, false);
-                if (rtBlocks(drawID, primID, bary))
-                    rayQueryConfirmIntersectionEXT(rq);
-            }
-        }
-        if (rayQueryGetIntersectionTypeEXT(rq, true) !=
-            gl_RayQueryCommittedIntersectionNoneEXT)
-            occluded += 1.0;
+        if (rtOccluded(origin, dir)) occluded += 1.0;
     }
     return 1.0 - occluded / float(n);
 }

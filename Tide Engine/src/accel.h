@@ -4,7 +4,6 @@
 
 class VulkanEngine;
 class Scene;
-struct MeshData;
 
 // One acceleration structure + the buffer that backs it.
 struct AccelStructure {
@@ -27,4 +26,4 @@ struct SceneAccel {
 // Instance mask: BLEND (glass) draws get 0x02 (shadow rays cull them); others
 // 0x01. instanceCustomIndex = drawID so hits can look up material/UV for the
 // alpha-mask test. Records into one immediate submit.
-void buildSceneAccel(VulkanEngine& eng, Scene& scene, const MeshData& data);
+void buildSceneAccel(VulkanEngine& eng, Scene& scene);
