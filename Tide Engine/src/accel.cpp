@@ -47,26 +47,25 @@ void buildSceneAccel(VulkanEngine& eng, Scene& scene) {
     VmaAllocator alloc = eng.allocator();
     loadFns(device);
 
-    // Only opaque geometry goes into the AS. Transparent (glass) casts no shadow
-    // and would need order-dependent handling, so it's excluded entirely — no
-    // instance masks, no alpha test, everything is a solid opaque occluder.
-    const std::vector<uint32_t>& ids = scene.opaqueIndices;
-    const uint32_t count = (uint32_t)ids.size();
-    if (count == 0 || !scene.vertexBuffer.buffer || !scene.indexBuffer.buffer) return;
+    // One BLAS per unique geometry (shared across instances). TLAS instances are
+    // built only for opaque instances — transparent (glass) casts no shadow, so
+    // it's excluded; no instance masks, no alpha test, all occluders opaque.
+    const uint32_t geoCount = scene.geometryCount;
+    if (geoCount == 0 || !scene.vertexBuffer.buffer || !scene.indexBuffer.buffer) return;
 
     VkDeviceAddress vtxAddr = bufferAddress(device, scene.vertexBuffer.buffer);
     VkDeviceAddress idxAddr = bufferAddress(device, scene.indexBuffer.buffer);
 
     SceneAccel& out = scene.accel;
-    out.blas.resize(count);
+    out.blas.resize(geoCount);
 
-    // ----- BLAS: one per opaque draw, slicing the shared vertex/index buffers -----
+    // ----- BLAS: one per geometry, slicing the shared vertex/index buffers -----
     std::vector<Buffer> scratch; // kept alive until the submit completes
-    scratch.reserve(count + 1);
+    scratch.reserve(geoCount + 1);
 
     eng.immediateSubmit([&](VkCommandBuffer cmd) {
-        for (uint32_t k = 0; k < count; k++) {
-            const MeshDraw& d = scene.draws[ids[k]];
+        for (uint32_t k = 0; k < geoCount; k++) {
+            const Geometry& d = scene.geometries[k];
 
             VkAccelerationStructureGeometryKHR geo{};
             geo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
@@ -140,10 +139,13 @@ void buildSceneAccel(VulkanEngine& eng, Scene& scene) {
         dep.pMemoryBarriers = &mb;
         vkCmdPipelineBarrier2(cmd, &dep);
 
-        // ----- TLAS instances (one per opaque draw) -----
-        std::vector<VkAccelerationStructureInstanceKHR> instances(count);
-        for (uint32_t k = 0; k < count; k++) {
-            const glm::mat4& m = scene.draws[ids[k]].transform; // column-major
+        // ----- TLAS instances (one per opaque scene instance, sharing BLAS) -----
+        const std::vector<uint32_t>& opaque = scene.opaqueInstances;
+        const uint32_t instCount = (uint32_t)opaque.size();
+        std::vector<VkAccelerationStructureInstanceKHR> instances(instCount);
+        for (uint32_t k = 0; k < instCount; k++) {
+            const MeshInstance& si = scene.instances[opaque[k]];
+            const glm::mat4& m = si.transform; // column-major
             VkAccelerationStructureInstanceKHR inst{};
             for (int r = 0; r < 3; r++)
                 for (int c = 0; c < 4; c++)
@@ -152,10 +154,10 @@ void buildSceneAccel(VulkanEngine& eng, Scene& scene) {
             inst.mask = 0xFFu;
             inst.instanceShaderBindingTableRecordOffset = 0;
             inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-            inst.accelerationStructureReference = out.blas[k].address;
+            inst.accelerationStructureReference = out.blas[si.geometryID].address; // shared BLAS
             instances[k] = inst;
         }
-        VkDeviceSize instBytes = sizeof(VkAccelerationStructureInstanceKHR) * count;
+        VkDeviceSize instBytes = sizeof(VkAccelerationStructureInstanceKHR) * instCount;
         out.instanceBuffer = createBuffer(alloc, instBytes,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -195,7 +197,7 @@ void buildSceneAccel(VulkanEngine& eng, Scene& scene) {
         VkAccelerationStructureBuildSizesInfoKHR sizes{};
         sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
         pGetSizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-                  &bi, &count, &sizes);
+                  &bi, &instCount, &sizes);
 
         out.tlas.buffer = makeAccelBuffer(alloc, sizes.accelerationStructureSize,
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
@@ -212,12 +214,13 @@ void buildSceneAccel(VulkanEngine& eng, Scene& scene) {
         scratch.push_back(s);
 
         VkAccelerationStructureBuildRangeInfoKHR range{};
-        range.primitiveCount = count;
+        range.primitiveCount = instCount;
         const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
         pCmdBuild(cmd, 1, &bi, &pRange);
     });
 
     for (auto& s : scratch) destroyBuffer(alloc, s);
 
-    TE_INFO("Accel: %u BLAS + 1 TLAS built (opaque only)\n", count);
+    TE_INFO("Accel: %u BLAS (per geometry) + 1 TLAS (%u opaque instances)\n",
+            geoCount, (uint32_t)scene.opaqueInstances.size());
 }

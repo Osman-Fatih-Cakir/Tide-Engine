@@ -609,16 +609,17 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdBindVertexBuffers(cmd, 0, 1, &scene.vertexBuffer.buffer, &offset);
         vkCmdBindIndexBuffer(cmd, scene.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-        for (uint32_t drawID : scene.opaqueIndices) {
-            const MeshDraw& d = scene.draws[drawID];
+        for (uint32_t instID : scene.opaqueInstances) {
+            const MeshInstance& inst = scene.instances[instID];
+            const Geometry& g = scene.geometries[inst.geometryID];
             VisPush push{};
             push.viewProj = viewProj;
-            push.model = d.transform;
-            push.drawID = drawID;
+            push.model = inst.transform;
+            push.drawID = instID; // packed into the visibility ID
             vkCmdPushConstants(cmd, m_visLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(VisPush), &push);
-            vkCmdDrawIndexed(cmd, d.indexCount, 1, d.firstIndex, d.vertexOffset, 0);
+            vkCmdDrawIndexed(cmd, g.indexCount, 1, g.firstIndex, g.vertexOffset, 0);
         }
         vkCmdEndRendering(cmd);
         m_eng->cmdEndLabel(cmd);
@@ -658,7 +659,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
 
     // ===================== Pass C: Transparent forward (blend -> HDR) =====================
     // After this, HDR is in GENERAL (no transparency) or COLOR_ATTACHMENT (with).
-    bool hasTransparent = !scene.transparentIndices.empty();
+    bool hasTransparent = !scene.transparentInstances.empty();
     if (hasTransparent) {
         TracyVkZone(tracy, cmd, "Transparent");
         m_eng->cmdBeginLabel(cmd, "Transparent Pass");
@@ -708,28 +709,29 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdBindIndexBuffer(cmd, scene.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
         // Back-to-front sort (centroid ~ transform origin), so blending is correct.
-        std::vector<uint32_t> sorted(scene.transparentIndices.begin(),
-                                     scene.transparentIndices.end());
+        std::vector<uint32_t> sorted(scene.transparentInstances.begin(),
+                                     scene.transparentInstances.end());
         std::sort(sorted.begin(), sorted.end(), [&](uint32_t a, uint32_t b) {
-            glm::vec3 ca = glm::vec3(scene.draws[a].transform[3]);
-            glm::vec3 cb = glm::vec3(scene.draws[b].transform[3]);
+            glm::vec3 ca = glm::vec3(scene.instances[a].transform[3]);
+            glm::vec3 cb = glm::vec3(scene.instances[b].transform[3]);
             return glm::dot(ca - cameraPos, ca - cameraPos) >
                    glm::dot(cb - cameraPos, cb - cameraPos);
         });
 
-        for (uint32_t drawID : sorted) {
-            const MeshDraw& d = scene.draws[drawID];
+        for (uint32_t instID : sorted) {
+            const MeshInstance& inst = scene.instances[instID];
+            const Geometry& g = scene.geometries[inst.geometryID];
             TransparentPush push{};
             push.viewProj = viewProj;
-            push.model = d.transform;
-            push.cameraPos = glm::vec4(cameraPos, (float)d.materialIndex);
+            push.model = inst.transform;
+            push.cameraPos = glm::vec4(cameraPos, (float)g.materialIndex);
             push.sunDir = glm::vec4(sun, settings.ambient);
             push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
             push.shadowCfg = shadowCfg;
             vkCmdPushConstants(cmd, m_transparentLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(TransparentPush), &push);
-            vkCmdDrawIndexed(cmd, d.indexCount, 1, d.firstIndex, d.vertexOffset, 0);
+            vkCmdDrawIndexed(cmd, g.indexCount, 1, g.firstIndex, g.vertexOffset, 0);
         }
         vkCmdEndRendering(cmd);
         m_eng->cmdEndLabel(cmd);

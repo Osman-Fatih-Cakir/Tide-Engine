@@ -33,7 +33,10 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
     vertexCount   = (uint32_t)data.vertices.size();
     indexCount    = (uint32_t)data.indices.size();
     materialCount = (uint32_t)data.materials.size();
-    draws         = data.draws;
+    geometries    = data.geometries;
+    instances     = data.instances;
+    geometryCount = (uint32_t)geometries.size();
+    instanceCount = (uint32_t)instances.size();
 
     // Vertex/index buffers are RT-ready: device address + accel build input.
     const VkBufferUsageFlags rtFlags =
@@ -57,41 +60,50 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
                                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                           "Scene Material Buffer");
 
-    // Flatten draws into the GPU draw SSBO (resolve compute reconstructs triangles).
-    drawCount = (uint32_t)draws.size();
-    if (drawCount) {
-        std::vector<GpuDraw> gpuDraws(drawCount);
-        for (uint32_t i = 0; i < drawCount; i++) {
-            gpuDraws[i].transform     = draws[i].transform;
-            gpuDraws[i].firstIndex    = draws[i].firstIndex;
-            gpuDraws[i].vertexOffset  = (uint32_t)draws[i].vertexOffset;
-            gpuDraws[i].materialIndex = draws[i].materialIndex;
+    // Geometry SSBO (resolve compute reconstructs triangles from instance->geometry).
+    if (geometryCount) {
+        std::vector<GpuGeometry> g(geometryCount);
+        for (uint32_t i = 0; i < geometryCount; i++) {
+            g[i].firstIndex    = geometries[i].firstIndex;
+            g[i].vertexOffset  = (uint32_t)geometries[i].vertexOffset;
+            g[i].materialIndex = geometries[i].materialIndex;
         }
-        drawBuffer = makeDeviceBuffer(eng, gpuDraws.data(),
-                                      drawCount * sizeof(GpuDraw),
-                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                      "Scene Draw Buffer");
+        geometryBuffer = makeDeviceBuffer(eng, g.data(), geometryCount * sizeof(GpuGeometry),
+                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                          "Scene Geometry Buffer");
     }
 
-    // Classify draws by material alpha mode: BLEND -> transparent, else opaque.
-    for (uint32_t i = 0; i < (uint32_t)draws.size(); i++) {
-        uint32_t mi = draws[i].materialIndex;
+    // Instance SSBO (transform + geometryID).
+    if (instanceCount) {
+        std::vector<GpuInstance> gi(instanceCount);
+        for (uint32_t i = 0; i < instanceCount; i++) {
+            gi[i].transform  = instances[i].transform;
+            gi[i].geometryID = instances[i].geometryID;
+        }
+        instanceBuffer = makeDeviceBuffer(eng, gi.data(), instanceCount * sizeof(GpuInstance),
+                                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                          "Scene Instance Buffer");
+    }
+
+    // Classify instances by their geometry's material alpha mode: BLEND -> transparent.
+    for (uint32_t i = 0; i < instanceCount; i++) {
+        uint32_t mi = geometries[instances[i].geometryID].materialIndex;
         bool blend = mi < data.materials.size() &&
                      data.materials[mi].alphaMode == ALPHA_BLEND;
-        (blend ? transparentIndices : opaqueIndices).push_back(i);
+        (blend ? transparentInstances : opaqueInstances).push_back(i);
     }
 
     boundsMin = data.boundsMin;
     boundsMax = data.boundsMax;
 
-    // Ray-tracing acceleration structure (BLAS-per-draw + TLAS) for shadow rays.
+    // Ray-tracing acceleration structure (BLAS-per-geometry + TLAS) for shadow rays.
     buildSceneAccel(eng, *this);
 
     buildTexturesAndDescriptors(eng, data);
 
-    TE_INFO("Scene: draws=%u (opaque=%u transparent=%u)  vertices=%u  indices=%u  materials=%u  textures=%u\n",
-            (uint32_t)draws.size(), (uint32_t)opaqueIndices.size(),
-            (uint32_t)transparentIndices.size(),
+    TE_INFO("Scene: geometries=%u  instances=%u (opaque=%u transparent=%u)  vertices=%u  indices=%u  materials=%u  textures=%u\n",
+            geometryCount, instanceCount, (uint32_t)opaqueInstances.size(),
+            (uint32_t)transparentInstances.size(),
             vertexCount, indexCount, materialCount, textureCount);
 }
 
@@ -132,10 +144,10 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
     const uint32_t arrayCount = textureCount > 0 ? textureCount : 1;
 
     // Scene descriptor set (read by the resolve compute + transparent frag):
-    //   b0 material SSBO, b1 bindless texture array, b2 vertex SSBO,
-    //   b3 index SSBO, b4 draw SSBO, b5 TLAS (ray-query shadows / RTGI).
-    VkDescriptorSetLayoutBinding bindings[6]{};
-    for (uint32_t i = 0; i < 6; i++) {
+    //   b0 material SSBO, b1 bindless texture array, b2 vertex SSBO, b3 index SSBO,
+    //   b4 instance SSBO, b5 TLAS (ray-query shadows / RTGI), b6 geometry SSBO.
+    VkDescriptorSetLayoutBinding bindings[7]{};
+    for (uint32_t i = 0; i < 7; i++) {
         bindings[i].binding = i;
         bindings[i].descriptorCount = 1;
         bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -149,29 +161,29 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
     bindings[1].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[5].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    VkDescriptorBindingFlags flags[6] = {
+    VkDescriptorBindingFlags flags[7] = {
         0,
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-        0, 0, 0, 0,
+        0, 0, 0, 0, 0,
     };
     VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{};
     flagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    flagsInfo.bindingCount = 6;
+    flagsInfo.bindingCount = 7;
     flagsInfo.pBindingFlags = flags;
 
     VkDescriptorSetLayoutCreateInfo lci{};
     lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     lci.pNext = &flagsInfo;
     lci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    lci.bindingCount = 6;
+    lci.bindingCount = 7;
     lci.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &setLayout));
 
     // Pool.
     VkDescriptorPoolSize sizes[3]{};
     sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    sizes[0].descriptorCount = 4; // material + vertex + index + draw
+    sizes[0].descriptorCount = 5; // material + vertex + index + instance + geometry
     sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sizes[1].descriptorCount = arrayCount;
     sizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
@@ -194,15 +206,16 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
 
     std::vector<VkWriteDescriptorSet> writes;
 
-    // b0 material, b2 vertex, b3 index, b4 draw — all storage buffers.
+    // b0 material, b2 vertex, b3 index, b4 instance, b6 geometry — storage buffers.
     struct { uint32_t binding; VkBuffer buffer; } ssbos[] = {
         {0, materialBuffer.buffer},
         {2, vertexBuffer.buffer},
         {3, indexBuffer.buffer},
-        {4, drawBuffer.buffer},
+        {4, instanceBuffer.buffer},
+        {6, geometryBuffer.buffer},
     };
-    VkDescriptorBufferInfo bufInfos[4]{};
-    for (uint32_t i = 0; i < 4; i++) {
+    VkDescriptorBufferInfo bufInfos[5]{};
+    for (uint32_t i = 0; i < 5; i++) {
         if (!ssbos[i].buffer) continue;
         bufInfos[i].buffer = ssbos[i].buffer;
         bufInfos[i].range = VK_WHOLE_SIZE;
@@ -269,5 +282,6 @@ void Scene::destroy(VkDevice device, VmaAllocator alloc) {
     destroyBuffer(alloc, vertexBuffer);
     destroyBuffer(alloc, indexBuffer);
     destroyBuffer(alloc, materialBuffer);
-    destroyBuffer(alloc, drawBuffer);
+    destroyBuffer(alloc, instanceBuffer);
+    destroyBuffer(alloc, geometryBuffer);
 }

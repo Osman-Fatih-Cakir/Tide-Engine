@@ -5,6 +5,8 @@
 
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <map>
+#include <limits>
 
 // --- node local transform ---
 static glm::mat4 nodeLocal(const tinygltf::Node& n) {
@@ -38,12 +40,24 @@ static const unsigned char* accessorPtr(const tinygltf::Model& m,
     return buf.data.data() + view.byteOffset + acc.byteOffset;
 }
 
-static void addPrimitive(const tinygltf::Model& model,
-                         const tinygltf::Primitive& prim,
-                         const glm::mat4& world, MeshData& out) {
-    if (prim.indices < 0) return;
+// Per-geometry local-space AABB, used to expand world bounds per instance
+// without re-touching the (shared) vertex data.
+struct GeoCache {
+    std::map<uint64_t, uint32_t> ids; // (meshIdx<<32 | primIdx) -> geometryID
+    std::vector<glm::vec3> localMin, localMax;
+};
+
+// Extract a unique (mesh,primitive) geometry once; later references reuse it.
+// Returns geometryID, or -1 if the primitive has no indices/positions.
+static int getOrAddGeometry(const tinygltf::Model& model, const tinygltf::Primitive& prim,
+                            int meshIdx, int primIdx, MeshData& out, GeoCache& cache) {
+    uint64_t key = ((uint64_t)(uint32_t)meshIdx << 32) | (uint32_t)primIdx;
+    auto it = cache.ids.find(key);
+    if (it != cache.ids.end()) return (int)it->second;
+
+    if (prim.indices < 0) return -1;
     auto itPos = prim.attributes.find("POSITION");
-    if (itPos == prim.attributes.end()) return;
+    if (itPos == prim.attributes.end()) return -1;
 
     const tinygltf::Accessor& posAcc = model.accessors[itPos->second];
     size_t posStride = 0;
@@ -65,14 +79,15 @@ static void addPrimitive(const tinygltf::Model& model,
         tanBase = accessorPtr(model, model.accessors[itT->second], tanStride);
 
     uint32_t baseVertex = (uint32_t)out.vertices.size();
+    glm::vec3 lmin( std::numeric_limits<float>::max());
+    glm::vec3 lmax(-std::numeric_limits<float>::max());
     out.vertices.reserve(out.vertices.size() + posAcc.count);
     for (size_t i = 0; i < posAcc.count; i++) {
         Vertex v{};
         const float* p = (const float*)(posBase + i * posStride);
         v.position = glm::vec3(p[0], p[1], p[2]);
-        glm::vec3 wp = glm::vec3(world * glm::vec4(v.position, 1.0f));
-        out.boundsMin = glm::min(out.boundsMin, wp);
-        out.boundsMax = glm::max(out.boundsMax, wp);
+        lmin = glm::min(lmin, v.position);
+        lmax = glm::max(lmax, v.position);
         if (nrmBase) {
             const float* n = (const float*)(nrmBase + i * nrmStride);
             v.normal = glm::vec3(n[0], n[1], n[2]);
@@ -107,24 +122,46 @@ static void addPrimitive(const tinygltf::Model& model,
         out.indices.push_back(index);
     }
 
-    MeshDraw draw{};
-    draw.firstIndex = firstIndex;
-    draw.indexCount = (uint32_t)idxAcc.count;
-    draw.vertexOffset = (int32_t)baseVertex;
-    draw.materialIndex = prim.material >= 0 ? (uint32_t)prim.material : 0;
-    draw.transform = world;
-    out.draws.push_back(draw);
+    Geometry geo{};
+    geo.firstIndex = firstIndex;
+    geo.indexCount = (uint32_t)idxAcc.count;
+    geo.vertexOffset = (int32_t)baseVertex;
+    geo.materialIndex = prim.material >= 0 ? (uint32_t)prim.material : 0;
+    uint32_t id = (uint32_t)out.geometries.size();
+    out.geometries.push_back(geo);
+    cache.ids[key] = id;
+    cache.localMin.push_back(lmin);
+    cache.localMax.push_back(lmax);
+    return (int)id;
 }
 
 static void processNode(const tinygltf::Model& model, int nodeIdx,
-                        const glm::mat4& parent, MeshData& out) {
+                        const glm::mat4& parent, MeshData& out, GeoCache& cache) {
     const tinygltf::Node& node = model.nodes[nodeIdx];
     glm::mat4 world = parent * nodeLocal(node);
-    if (node.mesh >= 0)
-        for (const auto& prim : model.meshes[node.mesh].primitives)
-            addPrimitive(model, prim, world, out);
+    if (node.mesh >= 0) {
+        const auto& prims = model.meshes[node.mesh].primitives;
+        for (int p = 0; p < (int)prims.size(); p++) {
+            int gid = getOrAddGeometry(model, prims[p], node.mesh, p, out, cache);
+            if (gid < 0) continue;
+            MeshInstance inst{};
+            inst.transform = world;
+            inst.geometryID = (uint32_t)gid;
+            out.instances.push_back(inst);
+            // Expand world bounds from the geometry's 8 local AABB corners.
+            glm::vec3 mn = cache.localMin[gid], mx = cache.localMax[gid];
+            for (int c = 0; c < 8; c++) {
+                glm::vec3 corner((c & 1) ? mx.x : mn.x,
+                                 (c & 2) ? mx.y : mn.y,
+                                 (c & 4) ? mx.z : mn.z);
+                glm::vec3 wp = glm::vec3(world * glm::vec4(corner, 1.0f));
+                out.boundsMin = glm::min(out.boundsMin, wp);
+                out.boundsMax = glm::max(out.boundsMax, wp);
+            }
+        }
+    }
     for (int child : node.children)
-        processNode(model, child, world, out);
+        processNode(model, child, world, out, cache);
 }
 
 bool loadGltf(const char* path, MeshData& out) {
@@ -169,15 +206,18 @@ bool loadGltf(const char* path, MeshData& out) {
     }
 
     // Walk the default scene's node hierarchy.
+    GeoCache cache;
     int sceneIdx = model.defaultScene >= 0 ? model.defaultScene : 0;
     if (!model.scenes.empty()) {
         for (int nodeIdx : model.scenes[sceneIdx].nodes)
-            processNode(model, nodeIdx, glm::mat4(1.0f), out);
+            processNode(model, nodeIdx, glm::mat4(1.0f), out, cache);
     } else {
         // No scene graph: just take every node.
         for (int i = 0; i < (int)model.nodes.size(); i++)
-            processNode(model, i, glm::mat4(1.0f), out);
+            processNode(model, i, glm::mat4(1.0f), out, cache);
     }
+    TE_INFO("glTF: %zu unique geometries, %zu instances\n",
+            out.geometries.size(), out.instances.size());
 
     // Textures: tinygltf already decoded images into model.images. Convert to RGBA8.
     out.textures.reserve(model.images.size());

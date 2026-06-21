@@ -541,8 +541,8 @@ void VulkanEngine::immediateSubmit(const std::function<void(VkCommandBuffer)>& f
 void VulkanEngine::loadScene() {
     const char* path = {
         //"../Resources/small/Room_Small.gltf",
-        "../Resources/nowindows/Room_NoWindows.gltf",
-        //"../Resources/small/Room_Small.gltf",
+        //"../Resources/nowindows/Room_NoWindows.gltf",
+        "../Resources/windowed/Room_Windowed.gltf",
     };
 
     MeshData data;

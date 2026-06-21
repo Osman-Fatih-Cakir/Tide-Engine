@@ -31,14 +31,33 @@ struct GpuMaterial {
 // glTF alpha modes (matches GpuMaterial::alphaMode).
 enum AlphaMode { ALPHA_OPAQUE = 0, ALPHA_MASK = 1, ALPHA_BLEND = 2 };
 
-// Per-draw record as it lives in the draw SSBO (read by the resolve compute to
-// reconstruct a triangle from a packed visibility ID). scalar layout in GLSL.
-struct GpuDraw {
+// Unique mesh-primitive geometry (deduplicated across glTF node references).
+// Lives once in the shared vertex/index buffers; many instances reference it.
+// GPU mirror (geometry SSBO, std430, 16 bytes) — indexCount isn't needed by the
+// resolve shader so it's CPU-only.
+struct GpuGeometry {
+    uint32_t firstIndex    = 0; // offset into the shared index buffer
+    uint32_t vertexOffset  = 0; // added to each fetched index
+    uint32_t materialIndex = 0;
+    uint32_t _pad          = 0;
+};
+struct Geometry {               // CPU-side: GpuGeometry + the draw-call index count
+    uint32_t firstIndex    = 0;
+    uint32_t indexCount    = 0;
+    int32_t  vertexOffset  = 0;
+    uint32_t materialIndex = 0;
+};
+
+// One placement of a geometry (a glTF node referencing a mesh). GPU mirror
+// (instance SSBO, scalar layout) reconstructs world position + finds the geometry.
+struct GpuInstance {
     glm::mat4 transform;        // node world transform
-    uint32_t  firstIndex   = 0; // offset into the shared index buffer
-    uint32_t  vertexOffset = 0; // added to each fetched index
-    uint32_t  materialIndex = 0;
-    uint32_t  _pad = 0;
+    uint32_t  geometryID = 0;
+    uint32_t  _pad0 = 0, _pad1 = 0, _pad2 = 0;
+};
+struct MeshInstance {           // CPU-side
+    glm::mat4 transform = glm::mat4(1.0f);
+    uint32_t  geometryID = 0;
 };
 
 // Decoded texture (RGBA8) ready for GPU upload.
@@ -48,22 +67,16 @@ struct TextureData {
     std::vector<unsigned char> rgba;
 };
 
-// One drawable primitive: a slice of the shared index buffer + its material.
-struct MeshDraw {
-    uint32_t  firstIndex    = 0;
-    uint32_t  indexCount    = 0;
-    int32_t   vertexOffset  = 0;
-    uint32_t  materialIndex = 0;
-    glm::mat4 transform     = glm::mat4(1.0f); // node world transform
-};
-
-// CPU-side result of loading a glTF. Knows nothing about Vulkan.
+// CPU-side result of loading a glTF. Knows nothing about Vulkan. Geometry is
+// deduplicated: each unique (mesh,primitive) appears once in `geometries` (and
+// once in the vertex/index buffers); `instances` place them with transforms.
 struct MeshData {
-    std::vector<Vertex>      vertices;
-    std::vector<uint32_t>    indices;
-    std::vector<GpuMaterial> materials;
-    std::vector<MeshDraw>    draws;
-    std::vector<TextureData> textures;   // indexed by glTF image source index
+    std::vector<Vertex>       vertices;
+    std::vector<uint32_t>     indices;
+    std::vector<GpuMaterial>  materials;
+    std::vector<Geometry>     geometries;
+    std::vector<MeshInstance> instances;
+    std::vector<TextureData>  textures;   // indexed by glTF image source index
 
     // World-space AABB (for auto camera placement).
     glm::vec3 boundsMin = glm::vec3( std::numeric_limits<float>::max());

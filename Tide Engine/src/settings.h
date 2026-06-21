@@ -11,7 +11,7 @@ struct Settings {
 
     // Shadows (ray traced).
     bool  shadowsEnabled  = true;
-    float sunAngularSize  = 0.5f;   // sun cone angle (degrees; larger = softer penumbra)
+    float sunAngularSize  = 0.3f;   // sun cone angle (degrees; larger = softer penumbra)
     int   shadowSamples   = 4;      // rays per pixel (1 = hard shadow)
 
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off

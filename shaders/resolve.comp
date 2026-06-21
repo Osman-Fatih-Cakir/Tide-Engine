@@ -25,8 +25,12 @@ struct GpuMaterial {
     int   pad2;
 };
 struct Vertex { vec3 position; vec3 normal; vec2 uv; vec4 tangent; };
-struct GpuDraw {
+struct GpuInstance {
     mat4 transform;
+    uint geometryID;
+    uint pad0; uint pad1; uint pad2;
+};
+struct GpuGeometry {
     uint firstIndex;
     uint vertexOffset;
     uint materialIndex;
@@ -37,8 +41,9 @@ layout(std430, set = 0, binding = 0) readonly buffer Materials { GpuMaterial mat
 layout(set = 0, binding = 1) uniform sampler2D textures[];
 layout(scalar, set = 0, binding = 2) readonly buffer Vertices { Vertex vertices[]; };
 layout(std430, set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
-layout(scalar, set = 0, binding = 4) readonly buffer Draws { GpuDraw draws[]; };
+layout(scalar, set = 0, binding = 4) readonly buffer Instances { GpuInstance instances[]; };
 layout(set = 0, binding = 5) uniform accelerationStructureEXT topLevelAS;
+layout(std430, set = 0, binding = 6) readonly buffer Geometries { GpuGeometry geometries[]; };
 
 // ----- Resolve set (set 1) -----
 layout(r32ui, set = 1, binding = 0) uniform readonly uimage2D visImage;
@@ -78,9 +83,11 @@ void main() {
         return;
     }
 
-    uint drawID = v >> 20;
+    uint instID = v >> 20;
     uint primID = v & 0xFFFFFu;
-    GpuDraw d = draws[drawID];
+    GpuInstance inst = instances[instID];
+    GpuGeometry d = geometries[inst.geometryID];
+    mat4 model = inst.transform;
 
     uint base = d.firstIndex + primID * 3u;
     uint i0 = indices[base + 0u] + d.vertexOffset;
@@ -91,9 +98,9 @@ void main() {
     Vertex a2 = vertices[i2];
 
     // World + clip positions.
-    vec3 wp0 = (d.transform * vec4(a0.position, 1.0)).xyz;
-    vec3 wp1 = (d.transform * vec4(a1.position, 1.0)).xyz;
-    vec3 wp2 = (d.transform * vec4(a2.position, 1.0)).xyz;
+    vec3 wp0 = (model * vec4(a0.position, 1.0)).xyz;
+    vec3 wp1 = (model * vec4(a1.position, 1.0)).xyz;
+    vec3 wp2 = (model * vec4(a2.position, 1.0)).xyz;
     vec4 c0 = pc.viewProj * vec4(wp0, 1.0);
     vec4 c1 = pc.viewProj * vec4(wp1, 1.0);
     vec4 c2 = pc.viewProj * vec4(wp2, 1.0);
@@ -114,7 +121,7 @@ void main() {
     pw /= (pw.x + pw.y + pw.z);
 
     vec3 worldPos = wp0 * pw.x + wp1 * pw.y + wp2 * pw.z;
-    mat3 nm = transpose(inverse(mat3(d.transform)));
+    mat3 nm = transpose(inverse(mat3(model)));
     vec3 N = normalize(nm * (a0.normal * pw.x + a1.normal * pw.y + a2.normal * pw.z));
     vec2 tuv = a0.uv * pw.x + a1.uv * pw.y + a2.uv * pw.z;
 
@@ -136,7 +143,7 @@ void main() {
 
     // Interpolated tangent (glTF vertex tangent; .w = handedness).
     vec4 tan4 = a0.tangent * pw.x + a1.tangent * pw.y + a2.tangent * pw.z;
-    vec3 T = normalize(mat3(d.transform) * tan4.xyz);
+    vec3 T = normalize(mat3(model) * tan4.xyz);
 
     // Material.
     GpuMaterial m = materials[d.materialIndex];

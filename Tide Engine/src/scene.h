@@ -17,23 +17,27 @@ public:
     Buffer vertexBuffer{};
     Buffer indexBuffer{};
     Buffer materialBuffer{};
-    Buffer drawBuffer{};   // GpuDraw[] — read by the resolve compute
+    Buffer instanceBuffer{}; // GpuInstance[] (b4) — transform + geometryID
+    Buffer geometryBuffer{}; // GpuGeometry[] (b6) — firstIndex/vertexOffset/material
 
-    SceneAccel accel{};    // BLAS-per-draw + TLAS (b5); ray-query shadows + RTGI
+    SceneAccel accel{};      // BLAS-per-geometry + TLAS (b5); ray-query shadows + RTGI
 
-    std::vector<MeshDraw> draws;
-    // Indices into `draws`, split by material alpha mode. Same drawID space as
-    // the GpuDraw SSBO (so the V-buffer can push the global index).
-    std::vector<uint32_t> opaqueIndices;
-    std::vector<uint32_t> transparentIndices;
-    // World-space bounds (copied from MeshData; used for the shadow ortho frustum).
+    // CPU-side geometry + instance tables (used by the vis pass draws and accel).
+    std::vector<Geometry>     geometries;
+    std::vector<MeshInstance> instances;
+    // Indices into `instances`, split by the geometry's material alpha mode.
+    // Same instanceID space the V-buffer packs into the visibility ID.
+    std::vector<uint32_t> opaqueInstances;
+    std::vector<uint32_t> transparentInstances;
+    // World-space bounds (copied from MeshData; used for camera framing).
     glm::vec3 boundsMin = glm::vec3(0.0f);
     glm::vec3 boundsMax = glm::vec3(0.0f);
 
     uint32_t vertexCount   = 0;
     uint32_t indexCount    = 0;
     uint32_t materialCount = 0;
-    uint32_t drawCount     = 0;
+    uint32_t geometryCount = 0;
+    uint32_t instanceCount = 0;
 
     // --- bindless textures + material SSBO ---
     std::vector<Image>    textures;
