@@ -113,6 +113,13 @@ void main() {
     vec3 N = normalize(nm * (a0.normal * pw.x + a1.normal * pw.y + a2.normal * pw.z));
     vec2 tuv = a0.uv * pw.x + a1.uv * pw.y + a2.uv * pw.z;
 
+    // Two-sided: face the GEOMETRIC normal toward the viewer BEFORE normal mapping.
+    // (Flipping the perturbed normal afterwards mirrors detail and causes
+    //  camera-dependent dark patches.) faceSign also fixes the bitangent.
+    vec3 V = normalize(pc.cameraPos.xyz - worldPos);
+    float faceSign = (dot(N, V) < 0.0) ? -1.0 : 1.0;
+    N *= faceSign;
+
     // Analytic UV gradients (no quad derivatives in compute) → mip selection.
     vec3 invW = vec3(1.0 / c0.w, 1.0 / c1.w, 1.0 / c2.w);
     vec2 tuvX = perspUV(p + vec2(2.0 / float(pc.screenSize.x), 0.0),
@@ -153,14 +160,11 @@ void main() {
     // Tangent-space normal mapping. Gram-Schmidt re-orthonormalize against N.
     if (m.normalTexture >= 0) {
         T = normalize(T - N * dot(N, T));
-        vec3 B = cross(N, T) * tan4.w;
+        vec3 B = cross(N, T) * tan4.w * faceSign;
         vec3 nt = textureGrad(textures[nonuniformEXT(m.normalTexture)], tuv, dUVdx, dUVdy).xyz * 2.0 - 1.0;
         N = normalize(mat3(T, B, N) * nt);
     }
 
-    // Two-sided: face the normal toward the viewer.
-    vec3 V = normalize(pc.cameraPos.xyz - worldPos);
-    if (dot(N, V) < 0.0) N = -N;
     vec3 L = normalize(pc.sunDir.xyz);
 
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);

@@ -65,17 +65,21 @@ void main() {
         ao = mix(1.0, occ, m.occlusionStrength);
     }
 
+    // Two-sided: face the geometric normal toward the viewer BEFORE normal
+    // mapping (flipping the perturbed normal afterwards causes dark patches).
     vec3 N = normalize(vNormal);
+    vec3 V = normalize(pc.cameraPos.xyz - vWorldPos);
+    float faceSign = (dot(N, V) < 0.0) ? -1.0 : 1.0;
+    N *= faceSign;
+
     // Tangent-space normal mapping (vertex tangent; .w = handedness).
     if (m.normalTexture >= 0) {
         vec3 T = normalize(vTangent.xyz - N * dot(N, vTangent.xyz));
-        vec3 B = cross(N, T) * vTangent.w;
+        vec3 B = cross(N, T) * vTangent.w * faceSign;
         vec3 nt = texture(textures[nonuniformEXT(m.normalTexture)], vUV).xyz * 2.0 - 1.0;
         N = normalize(mat3(T, B, N) * nt);
     }
 
-    vec3 V = normalize(pc.cameraPos.xyz - vWorldPos);
-    if (dot(N, V) < 0.0) N = -N;
     vec3 L = normalize(pc.sunDir.xyz);
 
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);
