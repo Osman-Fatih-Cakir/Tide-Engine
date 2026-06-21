@@ -81,6 +81,9 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
         (blend ? transparentIndices : opaqueIndices).push_back(i);
     }
 
+    boundsMin = data.boundsMin;
+    boundsMax = data.boundsMax;
+
     buildTexturesAndDescriptors(eng, data);
 
     TE_INFO("Scene: draws=%u (opaque=%u transparent=%u)  vertices=%u  indices=%u  materials=%u  textures=%u\n",
@@ -104,7 +107,11 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
     for (uint32_t i = 0; i < textureCount; i++) {
         const auto& td = data.textures[i];
         if (td.width <= 0 || td.height <= 0) { textures.push_back(Image{}); continue; }
-        textures.push_back(createTextureImage(eng, td.rgba.data(), td.width, td.height, srgb[i]));
+        Image img = createTextureImage(eng, td.rgba.data(), td.width, td.height, srgb[i]);
+        char name[48];
+        snprintf(name, sizeof(name), "Texture %u (%s)", i, srgb[i] ? "sRGB" : "linear");
+        eng.setDebugName((uint64_t)img.image, VK_OBJECT_TYPE_IMAGE, name);
+        textures.push_back(img);
     }
 
     // One sampler for everything.

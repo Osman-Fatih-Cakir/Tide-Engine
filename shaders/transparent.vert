@@ -13,10 +13,11 @@ layout(location = 3) out vec4 vTangent;
 layout(push_constant) uniform Push {
     mat4 viewProj;
     mat4 model;
-    vec4 cameraPos;
+    vec4 cameraPos;  // w = materialIndex (float)
     vec4 sunDir;     // xyz = dir to sun, w = ambient
-    vec4 sunColor;   // rgb = radiance
-    uint materialIndex;
+    vec4 sunColor;   // rgb = radiance, w = shadows enabled
+    mat4 lightViewProj;
+    vec4 shadowParams;
 } pc;
 
 void main() {

@@ -36,6 +36,9 @@ public:
     // Run GPU work synchronously (staging copies, etc.).
     void immediateSubmit(const std::function<void(VkCommandBuffer)>& fn);
     void setDebugName(uint64_t handle, VkObjectType type, const char* name);
+    // RenderDoc/Nsight command-buffer region labels (no-op without validation).
+    void cmdBeginLabel(VkCommandBuffer cmd, const char* name);
+    void cmdEndLabel(VkCommandBuffer cmd);
 
 private:
     // --- setup steps ---

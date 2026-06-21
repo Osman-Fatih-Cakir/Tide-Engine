@@ -4,6 +4,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "pbr.glsl"
+#include "shadow.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -42,12 +43,17 @@ layout(scalar, set = 0, binding = 4) readonly buffer Draws { GpuDraw draws[]; };
 layout(r32ui, set = 1, binding = 0) uniform readonly uimage2D visImage;
 layout(rgba16f, set = 1, binding = 1) uniform writeonly image2D hdrImage;
 
+// ----- Shadow set (set 2) -----
+layout(set = 2, binding = 0) uniform sampler2D shadowMap;
+
 layout(push_constant) uniform Push {
     mat4  viewProj;
     vec4  cameraPos;
-    vec4  sunDir;    // xyz = dir to sun, w = ambient
-    vec4  sunColor;  // rgb = radiance
+    vec4  sunDir;        // xyz = dir to sun, w = ambient
+    vec4  sunColor;      // rgb = radiance, w = shadows enabled (0/1)
     uvec2 screenSize;
+    mat4  lightViewProj;
+    vec4  shadowParams;  // x=lightSizeUV y=normalBias z=depthBias w=invShadowDim
 } pc;
 
 float cross2(vec2 a, vec2 b) { return a.x * b.y - a.y * b.x; }
@@ -167,7 +173,12 @@ void main() {
 
     vec3 L = normalize(pc.sunDir.xyz);
 
-    vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);
+    float shadow = 1.0;
+    if (pc.sunColor.w > 0.5)
+        shadow = pcssShadow(worldPos, N, L, pc.lightViewProj, shadowMap,
+                            pc.shadowParams, vec2(pix));
+
+    vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb) * shadow;
     color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO (real GI in Faz 7)
 
     imageStore(hdrImage, pix, vec4(color, 1.0));

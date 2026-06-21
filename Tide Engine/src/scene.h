@@ -23,6 +23,10 @@ public:
     // the GpuDraw SSBO (so the V-buffer can push the global index).
     std::vector<uint32_t> opaqueIndices;
     std::vector<uint32_t> transparentIndices;
+    // World-space bounds (copied from MeshData; used for the shadow ortho frustum).
+    glm::vec3 boundsMin = glm::vec3(0.0f);
+    glm::vec3 boundsMax = glm::vec3(0.0f);
+
     uint32_t vertexCount   = 0;
     uint32_t indexCount    = 0;
     uint32_t materialCount = 0;

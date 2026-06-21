@@ -540,7 +540,9 @@ void VulkanEngine::immediateSubmit(const std::function<void(VkCommandBuffer)>& f
 // ===========================================================================
 void VulkanEngine::loadScene() {
     const char* path = {
-        "../Resources/small/Room_Small.gltf",
+        //"../Resources/small/Room_Small.gltf",
+        "../Resources/nowindows/Room_NoWindows.gltf",
+        //"../Resources/small/Room_Small.gltf",
     };
 
     MeshData data;
@@ -747,6 +749,25 @@ void VulkanEngine::setDebugName(uint64_t handle, VkObjectType type, const char* 
     info.objectHandle = handle;
     info.pObjectName = name;
     fn(m_device, &info);
+}
+
+void VulkanEngine::cmdBeginLabel(VkCommandBuffer cmd, const char* name) {
+    if (!kEnableValidation) return;
+    static auto fn = (PFN_vkCmdBeginDebugUtilsLabelEXT)vkGetDeviceProcAddr(
+        m_device, "vkCmdBeginDebugUtilsLabelEXT");
+    if (!fn) return;
+    VkDebugUtilsLabelEXT info{};
+    info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    info.pLabelName = name;
+    fn(cmd, &info);
+}
+
+void VulkanEngine::cmdEndLabel(VkCommandBuffer cmd) {
+    if (!kEnableValidation) return;
+    static auto fn = (PFN_vkCmdEndDebugUtilsLabelEXT)vkGetDeviceProcAddr(
+        m_device, "vkCmdEndDebugUtilsLabelEXT");
+    if (!fn) return;
+    fn(cmd);
 }
 
 void VulkanEngine::cleanup() {

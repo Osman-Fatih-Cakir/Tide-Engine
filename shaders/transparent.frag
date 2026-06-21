@@ -3,6 +3,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "pbr.glsl"
+#include "shadow.glsl"
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -29,17 +30,21 @@ struct GpuMaterial {
 layout(std430, set = 0, binding = 0) readonly buffer Materials { GpuMaterial materials[]; };
 layout(set = 0, binding = 1) uniform sampler2D textures[];
 
+// ----- Shadow set (set 1) -----
+layout(set = 1, binding = 0) uniform sampler2D shadowMap;
+
 layout(push_constant) uniform Push {
     mat4 viewProj;
     mat4 model;
-    vec4 cameraPos;
+    vec4 cameraPos;  // w = materialIndex (float)
     vec4 sunDir;     // xyz = dir to sun, w = ambient
-    vec4 sunColor;   // rgb = radiance
-    uint materialIndex;
+    vec4 sunColor;   // rgb = radiance, w = shadows enabled (0/1)
+    mat4 lightViewProj;
+    vec4 shadowParams; // x=lightSizeUV y=normalBias z=depthBias w=invShadowDim
 } pc;
 
 void main() {
-    GpuMaterial m = materials[pc.materialIndex];
+    GpuMaterial m = materials[uint(pc.cameraPos.w)];
 
     vec4 base = m.baseColorFactor;
     if (m.baseColorTexture >= 0)
@@ -82,7 +87,12 @@ void main() {
 
     vec3 L = normalize(pc.sunDir.xyz);
 
-    vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);
+    float shadow = 1.0;
+    if (pc.sunColor.w > 0.5)
+        shadow = pcssShadow(vWorldPos, N, L, pc.lightViewProj, shadowMap,
+                            pc.shadowParams, gl_FragCoord.xy);
+
+    vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb) * shadow;
     color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO
 
     outColor = vec4(color, opacity);
