@@ -209,15 +209,15 @@ void main() {
     }
     imageStore(shadowHistWrite, pix, vec4(shadow, curW, 0.0, 0.0));
 
-    // ----- Motion vectors (prevUV - curUV). Static scene -> camera-only. -----
-    // curUV is this pixel's screen position (pixel center, unjittered). prevUV comes
-    // from the unjittered previous view-proj. DLSS reads history along this vector.
+    // ----- Motion vectors (Current - Prev). Static scene -> camera-only. -----
+    // DLSS expects motion vectors to point from previous to current (Current - Prev).
     vec2 motion = vec2(0.0);
     {
         vec4 pp = pc.prevViewProj * vec4(worldPos, 1.0);
         if (pp.w > 0.0) {
             vec2 prevUV = (pp.xy / pp.w) * 0.5 + 0.5;
-            motion = prevUV - uv;
+            vec2 curUnjitUV = uv - (pc.jitter.xy * 0.5);
+            motion = curUnjitUV - prevUV;
         }
     }
     imageStore(motionImage, pix, vec4(motion, 0.0, 0.0));
