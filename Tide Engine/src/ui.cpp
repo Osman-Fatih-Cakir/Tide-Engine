@@ -123,11 +123,10 @@ void Ui::buildPanel(Settings& s, float dt) {
     ImGui::SliderFloat("Intensity", &s.sunIntensity,    0.0f, 20.0f);
     ImGui::SliderFloat("Ambient",   &s.ambient,         0.0f, 1.0f);
 
-    ImGui::SeparatorText("Shadows");
+    ImGui::SeparatorText("Shadows (RT)");
     ImGui::Checkbox("Enabled", &s.shadowsEnabled);
-    ImGui::SliderFloat("Softness",    &s.sunAngularSize,   0.0f, 6.0f, "%.2f deg");
-    ImGui::SliderFloat("Depth Bias",  &s.shadowBias,       0.0f, 0.01f, "%.4f");
-    ImGui::SliderFloat("Normal Bias", &s.shadowNormalBias, 0.0f, 0.5f, "%.3f");
+    ImGui::SliderFloat("Softness", &s.sunAngularSize, 0.0f, 5.0f, "%.2f deg");
+    ImGui::SliderInt("Samples",    &s.shadowSamples,  1, 16);
 
     ImGui::SeparatorText("Tonemap");
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 5.0f);

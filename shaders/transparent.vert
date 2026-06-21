@@ -15,9 +15,8 @@ layout(push_constant) uniform Push {
     mat4 model;
     vec4 cameraPos;  // w = materialIndex (float)
     vec4 sunDir;     // xyz = dir to sun, w = ambient
-    vec4 sunColor;   // rgb = radiance, w = shadows enabled
-    mat4 lightViewProj;
-    vec4 shadowParams;
+    vec4 sunColor;   // rgb = radiance
+    vec4 shadowCfg;
 } pc;
 
 void main() {

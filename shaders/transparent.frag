@@ -1,9 +1,10 @@
-#version 450
+#version 460
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_ray_query : require
 
 #include "pbr.glsl"
-#include "shadow.glsl"
 
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
@@ -26,22 +27,32 @@ struct GpuMaterial {
     int   pad1;
     int   pad2;
 };
+struct Vertex { vec3 position; vec3 normal; vec2 uv; vec4 tangent; };
+struct GpuDraw {
+    mat4 transform;
+    uint firstIndex;
+    uint vertexOffset;
+    uint materialIndex;
+    uint pad;
+};
 
 layout(std430, set = 0, binding = 0) readonly buffer Materials { GpuMaterial materials[]; };
 layout(set = 0, binding = 1) uniform sampler2D textures[];
-
-// ----- Shadow set (set 1) -----
-layout(set = 1, binding = 0) uniform sampler2D shadowMap;
+layout(scalar, set = 0, binding = 2) readonly buffer Vertices { Vertex vertices[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
+layout(scalar, set = 0, binding = 4) readonly buffer Draws { GpuDraw draws[]; };
+layout(set = 0, binding = 5) uniform accelerationStructureEXT topLevelAS;
 
 layout(push_constant) uniform Push {
     mat4 viewProj;
     mat4 model;
     vec4 cameraPos;  // w = materialIndex (float)
     vec4 sunDir;     // xyz = dir to sun, w = ambient
-    vec4 sunColor;   // rgb = radiance, w = shadows enabled (0/1)
-    mat4 lightViewProj;
-    vec4 shadowParams; // x=lightSizeUV y=normalBias z=depthBias w=invShadowDim
+    vec4 sunColor;   // rgb = radiance
+    vec4 shadowCfg;  // x=sunConeRad y=samples z=shadowsOn w=frameIndex
 } pc;
+
+#include "rtshadow.glsl"
 
 void main() {
     GpuMaterial m = materials[uint(pc.cameraPos.w)];
@@ -88,9 +99,9 @@ void main() {
     vec3 L = normalize(pc.sunDir.xyz);
 
     float shadow = 1.0;
-    if (pc.sunColor.w > 0.5)
-        shadow = pcssShadow(vWorldPos, N, L, pc.lightViewProj, shadowMap,
-                            pc.shadowParams, gl_FragCoord.xy);
+    if (pc.shadowCfg.z > 0.5)
+        shadow = traceSunShadow(vWorldPos, N, L, pc.shadowCfg.x,
+                                int(pc.shadowCfg.y), uint(pc.shadowCfg.w), gl_FragCoord.xy);
 
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb) * shadow;
     color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO

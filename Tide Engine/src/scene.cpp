@@ -84,6 +84,9 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
     boundsMin = data.boundsMin;
     boundsMax = data.boundsMax;
 
+    // Ray-tracing acceleration structure (BLAS-per-draw + TLAS) for shadow rays.
+    buildSceneAccel(eng, *this, data);
+
     buildTexturesAndDescriptors(eng, data);
 
     TE_INFO("Scene: draws=%u (opaque=%u transparent=%u)  vertices=%u  indices=%u  materials=%u  textures=%u\n",
@@ -128,53 +131,55 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
 
     const uint32_t arrayCount = textureCount > 0 ? textureCount : 1;
 
-    // Scene descriptor set (read by the resolve compute):
-    //   b0 material SSBO, b1 bindless texture array,
-    //   b2 vertex SSBO, b3 index SSBO, b4 draw SSBO.
-    VkDescriptorSetLayoutBinding bindings[5]{};
-    for (uint32_t i = 0; i < 5; i++) {
+    // Scene descriptor set (read by the resolve compute + transparent frag):
+    //   b0 material SSBO, b1 bindless texture array, b2 vertex SSBO,
+    //   b3 index SSBO, b4 draw SSBO, b5 TLAS (ray-query shadows / RTGI).
+    VkDescriptorSetLayoutBinding bindings[6]{};
+    for (uint32_t i = 0; i < 6; i++) {
         bindings[i].binding = i;
         bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        // The transparent forward frag also reads all of these (PBR + RT shadow
+        // alpha test reconstructs triangles + samples the TLAS).
+        bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     }
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = arrayCount;
-    // Materials (b0) + textures (b1) are also read by the transparent forward frag.
-    bindings[0].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
-    bindings[1].stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 
-    VkDescriptorBindingFlags flags[5] = {
+    VkDescriptorBindingFlags flags[6] = {
         0,
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-        0, 0, 0,
+        0, 0, 0, 0,
     };
     VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{};
     flagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    flagsInfo.bindingCount = 5;
+    flagsInfo.bindingCount = 6;
     flagsInfo.pBindingFlags = flags;
 
     VkDescriptorSetLayoutCreateInfo lci{};
     lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     lci.pNext = &flagsInfo;
     lci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    lci.bindingCount = 5;
+    lci.bindingCount = 6;
     lci.pBindings = bindings;
     VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &setLayout));
 
     // Pool.
-    VkDescriptorPoolSize sizes[2]{};
+    VkDescriptorPoolSize sizes[3]{};
     sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     sizes[0].descriptorCount = 4; // material + vertex + index + draw
     sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     sizes[1].descriptorCount = arrayCount;
+    sizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    sizes[2].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pci.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     pci.maxSets = 1;
-    pci.poolSizeCount = 2;
+    pci.poolSizeCount = 3;
     pci.pPoolSizes = sizes;
     VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &descriptorPool));
 
@@ -233,11 +238,28 @@ void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data)
         writes.push_back(w);
     }
 
+    // b5 TLAS (acceleration structure write goes through a pNext struct).
+    VkWriteDescriptorSetAccelerationStructureKHR asInfo{};
+    if (accel.tlas.handle) {
+        asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+        asInfo.accelerationStructureCount = 1;
+        asInfo.pAccelerationStructures = &accel.tlas.handle;
+        VkWriteDescriptorSet w{};
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.pNext = &asInfo;
+        w.dstSet = descriptorSet;
+        w.dstBinding = 5;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        w.descriptorCount = 1;
+        writes.push_back(w);
+    }
+
     if (!writes.empty())
         vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
 }
 
 void Scene::destroy(VkDevice device, VmaAllocator alloc) {
+    accel.destroy(device, alloc);
     for (auto& img : textures) destroyImage(alloc, device, img);
     if (sampler) vkDestroySampler(device, sampler, nullptr);
     if (descriptorPool) vkDestroyDescriptorPool(device, descriptorPool, nullptr);

@@ -2,6 +2,7 @@
 #include "mesh.h"
 #include "gpu_buffer.h"
 #include "gpu_image.h"
+#include "accel.h"
 
 class VulkanEngine;
 
@@ -17,6 +18,8 @@ public:
     Buffer indexBuffer{};
     Buffer materialBuffer{};
     Buffer drawBuffer{};   // GpuDraw[] — read by the resolve compute
+
+    SceneAccel accel{};    // BLAS-per-draw + TLAS (b5); ray-query shadows + RTGI
 
     std::vector<MeshDraw> draws;
     // Indices into `draws`, split by material alpha mode. Same drawID space as

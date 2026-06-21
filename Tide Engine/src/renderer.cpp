@@ -1,4 +1,4 @@
-#include "renderer.h"
+﻿#include "renderer.h"
 #include "vk_engine.h"
 #include "scene.h"
 #include "shader.h"
@@ -8,13 +8,8 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// Shadow map resolution. Pick from {1024, 2048, 4096}; everything derives from
-// this single constant (target size + 1/dim in the PCSS params).
-// ---------------------------------------------------------------------------
-static constexpr uint32_t kShadowDim = 2048;
-
-// ---------------------------------------------------------------------------
 // Push constants (must match the GLSL layouts).
+// shadowCfg = (x=sunAngularSizeRad, y=sampleCount, z=shadowsEnabled, w=frameIndex)
 // ---------------------------------------------------------------------------
 struct VisPush {
     glm::mat4 viewProj;
@@ -25,30 +20,20 @@ struct ResolvePush {
     glm::mat4  viewProj;
     glm::vec4  cameraPos;  // xyz
     glm::vec4  sunDir;     // xyz = dir to sun, w = ambient
-    glm::vec4  sunColor;   // rgb = radiance, w = shadows enabled (0/1)
+    glm::vec4  sunColor;   // rgb = radiance
+    glm::vec4  shadowCfg;  // ray-traced shadow config
     glm::uvec2 screenSize;
-    glm::uvec2 _pad;       // std430 aligns the following mat4 to a 16-byte offset
-    glm::mat4  lightViewProj;
-    glm::vec4  shadowParams; // x=lightSizeUV y=normalBias z=depthBias w=invShadowDim
 };
 struct TonemapPush {
     float exposure;
 };
-// Kept at exactly 256 bytes (RTX 3070 maxPushConstantsSize) by packing the
-// material index into cameraPos.w instead of a separate uint + padding.
 struct TransparentPush {
     glm::mat4 viewProj;
     glm::mat4 model;
     glm::vec4 cameraPos;    // w = materialIndex (float)
     glm::vec4 sunDir;
     glm::vec4 sunColor;
-    glm::mat4 lightViewProj;
-    glm::vec4 shadowParams;
-};
-struct ShadowPush {
-    glm::mat4 lightViewProj;
-    glm::mat4 model;
-    uint32_t  materialIndex;
+    glm::vec4 shadowCfg;
 };
 
 // ---------------------------------------------------------------------------
@@ -128,25 +113,6 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkCreateSampler(device, &sci, nullptr, &m_hdrSampler));
     }
 
-    // Shadow-map sampler: linear, clamp to a white (= far, lit) border so samples
-    // outside the light frustum read as unoccluded. PCSS compares depth manually.
-    {
-        VkSamplerCreateInfo sci{};
-        sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sci.magFilter = VK_FILTER_LINEAR;
-        sci.minFilter = VK_FILTER_LINEAR;
-        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-        sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-        VK_CHECK(vkCreateSampler(device, &sci, nullptr, &m_shadowSampler));
-    }
-
-    // Shadow map image (fixed size, independent of the swapchain).
-    m_shadowMap = makeImage(eng, m_depthFormat,
-                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                            {kShadowDim, kShadowDim}, VK_IMAGE_ASPECT_DEPTH_BIT, "Shadow Map");
-
     // ---- Descriptor set layouts (resolve set1, tonemap set0) ----
     {
         VkDescriptorSetLayoutBinding b[2]{};
@@ -176,18 +142,6 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         lci.pBindings = &b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_tonemapSetLayout));
     }
-    {
-        VkDescriptorSetLayoutBinding b{};
-        b.binding = 0; // shadow map sampled (read by resolve compute + transparent frag)
-        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b.descriptorCount = 1;
-        b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo lci{};
-        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 1;
-        lci.pBindings = &b;
-        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_shadowSetLayout));
-    }
 
     // ---- Descriptor pool + sets (views written in createTargets) ----
     {
@@ -195,10 +149,10 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         sizes[0].descriptorCount = 2;
         sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sizes[1].descriptorCount = 2; // tonemap (hdr) + shadow set (shadow map)
+        sizes[1].descriptorCount = 1; // tonemap (hdr)
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pci.maxSets = 3;
+        pci.maxSets = 2;
         pci.poolSizeCount = 2;
         pci.pPoolSizes = sizes;
         VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_pool));
@@ -211,20 +165,6 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_resolveSet));
         dai.pSetLayouts = &m_tonemapSetLayout;
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_tonemapSet));
-        dai.pSetLayouts = &m_shadowSetLayout;
-        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_shadowSet));
-
-        // Shadow set points at the (fixed-size) shadow map; written once here.
-        VkDescriptorImageInfo shadowInfo{};
-        shadowInfo.sampler = m_shadowSampler;
-        shadowInfo.imageView = m_shadowMap.view;
-        shadowInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet sw{};
-        sw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        sw.dstSet = m_shadowSet; sw.dstBinding = 0;
-        sw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sw.descriptorCount = 1; sw.pImageInfo = &shadowInfo;
-        vkUpdateDescriptorSets(device, 1, &sw, 0, nullptr);
     }
 
     // ---- Visibility pipeline (raster, position-only vertex input) ----
@@ -324,102 +264,6 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         vkDestroyShaderModule(device, frag, nullptr);
     }
 
-    // ---- Shadow pipeline (depth-only, light's POV; alpha-mask discard) ----
-    {
-        VkShaderModule vert = loadShaderModule(device, "shaders/shadow.vert", VK_SHADER_STAGE_VERTEX_BIT);
-        VkShaderModule frag = loadShaderModule(device, "shaders/shadow.frag", VK_SHADER_STAGE_FRAGMENT_BIT);
-        VkPipelineShaderStageCreateInfo stages[2]{};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stages[0].module = vert; stages[0].pName = "main";
-        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[1].module = frag; stages[1].pName = "main";
-
-        VkVertexInputBindingDescription binding{};
-        binding.binding = 0;
-        binding.stride = sizeof(Vertex);
-        binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        VkVertexInputAttributeDescription attrs[2]{};
-        attrs[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)};
-        attrs[1] = {1, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vertex, uv)};
-        VkPipelineVertexInputStateCreateInfo vi{};
-        vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vi.vertexBindingDescriptionCount = 1;
-        vi.pVertexBindingDescriptions = &binding;
-        vi.vertexAttributeDescriptionCount = 2;
-        vi.pVertexAttributeDescriptions = attrs;
-
-        VkPipelineInputAssemblyStateCreateInfo ia{};
-        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-
-        VkPipelineViewportStateCreateInfo vp{};
-        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        vp.viewportCount = 1; vp.scissorCount = 1;
-
-        VkPipelineRasterizationStateCreateInfo rs{};
-        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rs.polygonMode = VK_POLYGON_MODE_FILL;
-        rs.cullMode = VK_CULL_MODE_NONE; // two-sided (thin blinds); bias fights acne
-        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        rs.lineWidth = 1.0f;
-        rs.depthBiasEnable = VK_TRUE; // slope-scaled, set dynamically
-
-        VkPipelineMultisampleStateCreateInfo ms{};
-        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineDepthStencilStateCreateInfo ds{};
-        ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        ds.depthTestEnable = VK_TRUE;
-        ds.depthWriteEnable = VK_TRUE;
-        ds.depthCompareOp = VK_COMPARE_OP_LESS;
-
-        VkPipelineColorBlendStateCreateInfo cb{}; // no color attachments
-        cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-
-        VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-                                      VK_DYNAMIC_STATE_DEPTH_BIAS};
-        VkPipelineDynamicStateCreateInfo dyn{};
-        dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dyn.dynamicStateCount = 3;
-        dyn.pDynamicStates = dynStates;
-
-        VkPushConstantRange pc{};
-        pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        pc.size = sizeof(ShadowPush);
-        VkPipelineLayoutCreateInfo lci{};
-        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        lci.setLayoutCount = 1;
-        lci.pSetLayouts = &sceneSetLayout; // bindless materials/textures for alpha mask
-        lci.pushConstantRangeCount = 1;
-        lci.pPushConstantRanges = &pc;
-        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_shadowLayout));
-
-        VkPipelineRenderingCreateInfo rendering{};
-        rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        rendering.colorAttachmentCount = 0;
-        rendering.depthAttachmentFormat = depthFormat;
-
-        VkGraphicsPipelineCreateInfo gpi{};
-        gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        gpi.pNext = &rendering;
-        gpi.stageCount = 2; gpi.pStages = stages;
-        gpi.pVertexInputState = &vi;
-        gpi.pInputAssemblyState = &ia;
-        gpi.pViewportState = &vp;
-        gpi.pRasterizationState = &rs;
-        gpi.pMultisampleState = &ms;
-        gpi.pDepthStencilState = &ds;
-        gpi.pColorBlendState = &cb;
-        gpi.pDynamicState = &dyn;
-        gpi.layout = m_shadowLayout;
-        VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &m_shadowPipeline));
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, frag, nullptr);
-    }
-
     // ---- Transparent forward pipeline (blends into HDR, tests opaque depth) ----
     {
         VkShaderModule vert = loadShaderModule(device, "shaders/transparent.vert", VK_SHADER_STAGE_VERTEX_BIT);
@@ -497,11 +341,10 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pc.size = sizeof(TransparentPush);
-        VkDescriptorSetLayout tsets[2] = {sceneSetLayout, m_shadowSetLayout};
         VkPipelineLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        lci.setLayoutCount = 2;
-        lci.pSetLayouts = tsets;
+        lci.setLayoutCount = 1;
+        lci.pSetLayouts = &sceneSetLayout; // scene set carries the TLAS (b5)
         lci.pushConstantRangeCount = 1;
         lci.pPushConstantRanges = &pc;
         VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_transparentLayout));
@@ -538,10 +381,10 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.size = sizeof(ResolvePush);
-        VkDescriptorSetLayout sets[3] = {sceneSetLayout, m_resolveSetLayout, m_shadowSetLayout};
+        VkDescriptorSetLayout sets[2] = {sceneSetLayout, m_resolveSetLayout};
         VkPipelineLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        lci.setLayoutCount = 3;
+        lci.setLayoutCount = 2;
         lci.pSetLayouts = sets;
         lci.pushConstantRangeCount = 1;
         lci.pPushConstantRanges = &pc;
@@ -681,11 +524,6 @@ void Renderer::destroyTargets(VulkanEngine& eng) {
 void Renderer::destroy(VulkanEngine& eng) {
     VkDevice device = eng.device();
     destroyTargets(eng);
-    destroyImage(eng.allocator(), device, m_shadowMap);
-    if (m_shadowSampler) vkDestroySampler(device, m_shadowSampler, nullptr);
-    if (m_shadowPipeline) vkDestroyPipeline(device, m_shadowPipeline, nullptr);
-    if (m_shadowLayout) vkDestroyPipelineLayout(device, m_shadowLayout, nullptr);
-    if (m_shadowSetLayout) vkDestroyDescriptorSetLayout(device, m_shadowSetLayout, nullptr);
     if (m_hdrSampler) vkDestroySampler(device, m_hdrSampler, nullptr);
     if (m_visPipeline) vkDestroyPipeline(device, m_visPipeline, nullptr);
     if (m_visLayout) vkDestroyPipelineLayout(device, m_visLayout, nullptr);
@@ -698,19 +536,6 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_resolveSetLayout) vkDestroyDescriptorSetLayout(device, m_resolveSetLayout, nullptr);
     if (m_tonemapSetLayout) vkDestroyDescriptorSetLayout(device, m_tonemapSetLayout, nullptr);
     if (m_pool) vkDestroyDescriptorPool(device, m_pool, nullptr);
-}
-
-// Directional light ortho frustum tight around the scene bounds. No Y flip:
-// the same matrix rasterizes and samples the map, so the convention is internal
-// (uv = ndc.xy*0.5+0.5). GLM_FORCE_DEPTH_ZERO_TO_ONE gives Vulkan's [0,1] z.
-static glm::mat4 computeLightViewProj(const glm::vec3& sunDir,
-                                      const glm::vec3& center, float radius) {
-    glm::vec3 L = glm::normalize(sunDir);
-    glm::vec3 eye = center + L * radius;
-    glm::vec3 up = (std::fabs(L.y) > 0.99f) ? glm::vec3(0, 0, 1) : glm::vec3(0, 1, 0);
-    glm::mat4 view = glm::lookAt(eye, center, up);
-    glm::mat4 proj = glm::ortho(-radius, radius, -radius, radius, 0.0f, 2.0f * radius);
-    return proj * view;
 }
 
 // ---------------------------------------------------------------------------
@@ -729,82 +554,13 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
     VkRect2D scissor{};
     scissor.extent = extent;
 
-    // Light matrix + PCSS params (shared by shadow/resolve/transparent passes).
-    glm::vec3 sceneCenter = 0.5f * (scene.boundsMin + scene.boundsMax);
-    float sceneRadius = glm::length(scene.boundsMax - scene.boundsMin) * 0.5f;
-    if (sceneRadius <= 0.0f) sceneRadius = 1.0f;
+    // Ray-traced shadow config (shared by resolve + transparent passes).
     glm::vec3 sun = sunDirection(settings);
-    glm::mat4 lightVP = computeLightViewProj(sun, sceneCenter, sceneRadius);
-    glm::vec4 shadowParams(
-        std::tan(glm::radians(settings.sunAngularSize * 0.5f)), // light size in UV (penumbra scale)
-        settings.shadowNormalBias,
-        settings.shadowBias,
-        1.0f / (float)kShadowDim);
-    float shadowsOn = settings.shadowsEnabled ? 1.0f : 0.0f;
-
-    // ===================== Pass S: Shadow map (depth-only, light POV) =====================
-    // Always rendered (cheap) so the map stays in a valid SHADER_READ_ONLY layout
-    // for the descriptor; the lighting passes branch on shadowsOn before sampling.
-    {
-        TracyVkZone(tracy, cmd, "Shadow");
-        m_eng->cmdBeginLabel(cmd, "Shadow Pass");
-        imgBarrier(cmd, m_shadowMap.image, VK_IMAGE_ASPECT_DEPTH_BIT,
-                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-
-        VkRenderingAttachmentInfo depth{};
-        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        depth.imageView = m_shadowMap.view;
-        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        depth.clearValue.depthStencil = {1.0f, 0};
-
-        VkRenderingInfo ri{};
-        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        ri.renderArea.extent = {kShadowDim, kShadowDim};
-        ri.layerCount = 1;
-        ri.pDepthAttachment = &depth;
-        vkCmdBeginRendering(cmd, &ri);
-
-        VkViewport svp{};
-        svp.width = (float)kShadowDim; svp.height = (float)kShadowDim; svp.maxDepth = 1.0f;
-        VkRect2D sscissor{}; sscissor.extent = {kShadowDim, kShadowDim};
-        vkCmdSetViewport(cmd, 0, 1, &svp);
-        vkCmdSetScissor(cmd, 0, 1, &sscissor);
-        vkCmdSetDepthBias(cmd, 1.25f, 0.0f, 2.0f); // slope-scaled, fights acne
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
-                                0, 1, &scene.descriptorSet, 0, nullptr);
-
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &scene.vertexBuffer.buffer, &offset);
-        vkCmdBindIndexBuffer(cmd, scene.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-        // Casters = opaque + alpha-masked (BLEND/glass casts no shadow).
-        for (uint32_t drawID : scene.opaqueIndices) {
-            const MeshDraw& d = scene.draws[drawID];
-            ShadowPush push{};
-            push.lightViewProj = lightVP;
-            push.model = d.transform;
-            push.materialIndex = d.materialIndex;
-            vkCmdPushConstants(cmd, m_shadowLayout,
-                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(ShadowPush), &push);
-            vkCmdDrawIndexed(cmd, d.indexCount, 1, d.firstIndex, d.vertexOffset, 0);
-        }
-        vkCmdEndRendering(cmd);
-
-        // Depth attachment -> sampled (read by resolve compute + transparent frag).
-        imgBarrier(cmd, m_shadowMap.image, VK_IMAGE_ASPECT_DEPTH_BIT,
-                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                   VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        m_eng->cmdEndLabel(cmd);
-    }
+    glm::vec4 shadowCfg(
+        glm::radians(settings.sunAngularSize),               // sun cone half-angle (rad)
+        settings.shadowsEnabled ? (float)settings.shadowSamples : 0.0f,
+        settings.shadowsEnabled ? 1.0f : 0.0f,
+        (float)(m_frameIndex++ & 0xFFFF));                   // frame index for dither
 
     // ===================== Pass A: Visibility (raster) =====================
     {
@@ -871,7 +627,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
     // ===================== Pass B: Resolve (compute -> HDR) =====================
     {
         TracyVkZone(tracy, cmd, "Resolve");
-        m_eng->cmdBeginLabel(cmd, "Resolve Pass (PBR+PCSS)");
+        m_eng->cmdBeginLabel(cmd, "Resolve Pass (PBR+RT shadow)");
         imgBarrier(cmd, m_vis.image, VK_IMAGE_ASPECT_COLOR_BIT,
                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
@@ -882,18 +638,17 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_resolvePipeline);
-        VkDescriptorSet sets[3] = {scene.descriptorSet, m_resolveSet, m_shadowSet};
+        VkDescriptorSet sets[2] = {scene.descriptorSet, m_resolveSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_resolveLayout,
-                                0, 3, sets, 0, nullptr);
+                                0, 2, sets, 0, nullptr);
 
         ResolvePush push{};
         push.viewProj = viewProj;
         push.cameraPos = glm::vec4(cameraPos, 1.0f);
         push.sunDir = glm::vec4(sun, settings.ambient);
-        push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), shadowsOn);
+        push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+        push.shadowCfg = shadowCfg;
         push.screenSize = glm::uvec2(extent.width, extent.height);
-        push.lightViewProj = lightVP;
-        push.shadowParams = shadowParams;
         vkCmdPushConstants(cmd, m_resolveLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(ResolvePush), &push);
 
@@ -945,9 +700,8 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentPipeline);
-        VkDescriptorSet tsets[2] = {scene.descriptorSet, m_shadowSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentLayout,
-                                0, 2, tsets, 0, nullptr);
+                                0, 1, &scene.descriptorSet, 0, nullptr);
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &scene.vertexBuffer.buffer, &offset);
@@ -970,9 +724,8 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
             push.model = d.transform;
             push.cameraPos = glm::vec4(cameraPos, (float)d.materialIndex);
             push.sunDir = glm::vec4(sun, settings.ambient);
-            push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), shadowsOn);
-            push.lightViewProj = lightVP;
-            push.shadowParams = shadowParams;
+            push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+            push.shadowCfg = shadowCfg;
             vkCmdPushConstants(cmd, m_transparentLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(TransparentPush), &push);

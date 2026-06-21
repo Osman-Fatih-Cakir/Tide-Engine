@@ -1,10 +1,10 @@
-#version 450
+#version 460
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
 
 #include "pbr.glsl"
-#include "shadow.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -38,23 +38,22 @@ layout(set = 0, binding = 1) uniform sampler2D textures[];
 layout(scalar, set = 0, binding = 2) readonly buffer Vertices { Vertex vertices[]; };
 layout(std430, set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
 layout(scalar, set = 0, binding = 4) readonly buffer Draws { GpuDraw draws[]; };
+layout(set = 0, binding = 5) uniform accelerationStructureEXT topLevelAS;
 
 // ----- Resolve set (set 1) -----
 layout(r32ui, set = 1, binding = 0) uniform readonly uimage2D visImage;
 layout(rgba16f, set = 1, binding = 1) uniform writeonly image2D hdrImage;
 
-// ----- Shadow set (set 2) -----
-layout(set = 2, binding = 0) uniform sampler2D shadowMap;
-
 layout(push_constant) uniform Push {
     mat4  viewProj;
     vec4  cameraPos;
     vec4  sunDir;        // xyz = dir to sun, w = ambient
-    vec4  sunColor;      // rgb = radiance, w = shadows enabled (0/1)
+    vec4  sunColor;      // rgb = radiance
+    vec4  shadowCfg;     // x=sunConeRad y=samples z=shadowsOn w=frameIndex
     uvec2 screenSize;
-    mat4  lightViewProj;
-    vec4  shadowParams;  // x=lightSizeUV y=normalBias z=depthBias w=invShadowDim
 } pc;
+
+#include "rtshadow.glsl"
 
 float cross2(vec2 a, vec2 b) { return a.x * b.y - a.y * b.x; }
 
@@ -174,9 +173,9 @@ void main() {
     vec3 L = normalize(pc.sunDir.xyz);
 
     float shadow = 1.0;
-    if (pc.sunColor.w > 0.5)
-        shadow = pcssShadow(worldPos, N, L, pc.lightViewProj, shadowMap,
-                            pc.shadowParams, vec2(pix));
+    if (pc.shadowCfg.z > 0.5)
+        shadow = traceSunShadow(worldPos, N, L, pc.shadowCfg.x,
+                                int(pc.shadowCfg.y), uint(pc.shadowCfg.w), vec2(pix));
 
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb) * shadow;
     color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO (real GI in Faz 7)

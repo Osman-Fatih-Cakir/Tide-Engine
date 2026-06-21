@@ -9,11 +9,10 @@ struct Settings {
     float sunIntensity    = 4.0f;  // directional sun radiance multiplier
     float exposure        = 1.0f;  // tonemap exposure
 
-    // Shadows (PCSS).
+    // Shadows (ray traced).
     bool  shadowsEnabled  = true;
-    float sunAngularSize  = 1.5f;   // PCSS softness (degrees; larger = softer penumbra)
-    float shadowBias      = 0.0015f;// depth bias in light NDC (acne vs peter-panning)
-    float shadowNormalBias= 0.05f;  // world-space offset along the normal before sampling
+    float sunAngularSize  = 0.5f;   // sun cone angle (degrees; larger = softer penumbra)
+    int   shadowSamples   = 4;      // rays per pixel (1 = hard shadow)
 
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 

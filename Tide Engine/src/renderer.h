@@ -34,6 +34,7 @@ public:
 
 private:
     VulkanEngine* m_eng = nullptr; // for cmd debug labels in record()
+    uint32_t      m_frameIndex = 0; // dither/jitter seed for RT shadow sampling
     VkFormat m_swapchainFormat = VK_FORMAT_UNDEFINED;
     VkFormat m_depthFormat     = VK_FORMAT_UNDEFINED;
 
@@ -42,14 +43,6 @@ private:
     Image      m_hdr{};                 // RGBA16F linear radiance
     VkExtent2D m_extent = {};
     VkSampler  m_hdrSampler = VK_NULL_HANDLE;
-
-    // Shadow map (directional sun, single ortho frustum, PCSS).
-    Image                 m_shadowMap{};       // D32 depth, sampled
-    VkSampler             m_shadowSampler = VK_NULL_HANDLE;
-    VkPipeline            m_shadowPipeline = VK_NULL_HANDLE;
-    VkPipelineLayout      m_shadowLayout   = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_shadowSetLayout = VK_NULL_HANDLE; // { shadow map sampled }
-    VkDescriptorSet       m_shadowSet       = VK_NULL_HANDLE;
 
     // Visibility pass (raster).
     VkPipeline       m_visPipeline = VK_NULL_HANDLE;
