@@ -31,6 +31,12 @@ struct ResolvePush {
 struct CompositePush {
     glm::uvec2 screenSize;
 };
+struct AtrousPush {
+    glm::uvec2 screenSize;
+    int        step;
+    float      phiNormal;
+    float      phiDepth;
+};
 struct TonemapPush {
     float exposure;
 };
@@ -189,6 +195,21 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_compositeSetLayout));
     }
+    // À-trous set: shadowIn(read) + shadowOut(write) + normal(read) + directLight(read).
+    {
+        VkDescriptorSetLayoutBinding b[4]{};
+        for (uint32_t i = 0; i < 4; i++) {
+            b[i].binding = i;
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 4;
+        lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_atrousSetLayout));
+    }
     {
         VkDescriptorSetLayoutBinding b{};
         b.binding = 0; // hdr sampled
@@ -206,14 +227,13 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     {
         VkDescriptorPoolSize sizes[2]{};
         sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        // 2 resolve sets * 9 storage (vis,hdr,histWrite,motion,diff,spec,normal,directLight,
-        // shadowOut) + 3 composite storage = 21.
-        sizes[0].descriptorCount = 21;
+        // 2 resolve * 9 storage + 2 composite * 3 + 2 à-trous * 4 = 18 + 6 + 8 = 32.
+        sizes[0].descriptorCount = 32;
         sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sizes[1].descriptorCount = 4;  // 2 tonemap (hdr/dlss) + 2 resolve sets (histRead)
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pci.maxSets = 5;               // 2 resolve + 1 composite + 2 tonemap
+        pci.maxSets = 8;               // 2 resolve + 2 composite + 2 à-trous + 2 tonemap
         pci.poolSizeCount = 2;
         pci.pPoolSizes = sizes;
         VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_pool));
@@ -227,6 +247,10 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_resolveSet[1]));
         dai.pSetLayouts = &m_compositeSetLayout;
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_compositeSet));
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_compositeSetB));
+        dai.pSetLayouts = &m_atrousSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_atrousSet[0]));
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_atrousSet[1]));
         dai.pSetLayouts = &m_tonemapSetLayout;
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_tonemapSet));
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_tonemapSetDlss));
@@ -492,6 +516,32 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         vkDestroyShaderModule(device, comp, nullptr);
     }
 
+    // ---- À-trous pipeline (compute, SVGF spatial shadow filter) ----
+    {
+        VkShaderModule comp = loadShaderModule(device, "shaders/atrous.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pc.size = sizeof(AtrousPush);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 1;
+        lci.pSetLayouts = &m_atrousSetLayout;
+        lci.pushConstantRangeCount = 1;
+        lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_atrousLayout));
+
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = comp;
+        cpi.stage.pName = "main";
+        cpi.layout = m_atrousLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_atrousPipeline));
+        vkDestroyShaderModule(device, comp, nullptr);
+    }
+
     // ---- Tonemap pipeline (fullscreen fragment, no vertex input/depth) ----
     {
         VkShaderModule vert = loadShaderModule(device, "shaders/fullscreen.vert", VK_SHADER_STAGE_VERTEX_BIT);
@@ -614,11 +664,12 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
                              VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                              displayExtent, VK_IMAGE_ASPECT_COLOR_BIT, "DLSS Output");
 
-    // Initialize both history images to GENERAL so the per-frame "read = GENERAL ->
-    // SHADER_READ" barrier is always valid (first frame forces a history reset).
+    // Initialize history images + shadowOut2 to GENERAL so the per-frame GENERAL->GENERAL
+    // barriers are always valid. (shadowHist read needs it; shadowOut2 is only ever touched
+    // by à-trous, which assumes GENERAL — resolve never transitions it.)
     eng.immediateSubmit([&](VkCommandBuffer cmd) {
-        for (int i = 0; i < 2; i++)
-            imgBarrier(cmd, m_shadowHist[i].image, VK_IMAGE_ASPECT_COLOR_BIT,
+        for (VkImage g : {m_shadowHist[0].image, m_shadowHist[1].image, m_shadowOut2.image})
+            imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
@@ -648,9 +699,10 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     diffStore.imageView = m_gbufDiffuse.view;  diffStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     specStore.imageView = m_gbufSpecular.view; specStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     normStore.imageView = m_gbufNormal.view;   normStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkDescriptorImageInfo directStore{}, shadowOutStore{};
-    directStore.imageView    = m_directLight.view; directStore.imageLayout    = VK_IMAGE_LAYOUT_GENERAL;
-    shadowOutStore.imageView = m_shadowOut.view;   shadowOutStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo directStore{}, shadowOutStore{}, shadowOut2Store{};
+    directStore.imageView     = m_directLight.view; directStore.imageLayout     = VK_IMAGE_LAYOUT_GENERAL;
+    shadowOutStore.imageView  = m_shadowOut.view;   shadowOutStore.imageLayout  = VK_IMAGE_LAYOUT_GENERAL;
+    shadowOut2Store.imageView = m_shadowOut2.view;  shadowOut2Store.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkDescriptorImageInfo hdrSamp{};
     hdrSamp.sampler = m_hdrSampler;
     hdrSamp.imageView = m_hdr.view;
@@ -681,10 +733,23 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
         add(m_resolveSet[k], 8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
         add(m_resolveSet[k], 9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOutStore);
     }
-    // Composite: directLight(read) + shadowOut(read) + hdr(read/write).
+    // Composite: directLight(read) + shadow(read) + hdr(read/write). Two variants:
+    // A reads shadowOut (Off/Temporal/RR), B reads shadowOut2 (after odd à-trous count).
     add(m_compositeSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
     add(m_compositeSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOutStore);
     add(m_compositeSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &hdrStore);
+    add(m_compositeSetB, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
+    add(m_compositeSetB, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOut2Store);
+    add(m_compositeSetB, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &hdrStore);
+    // À-trous ping-pong: set[0] shadowOut->shadowOut2, set[1] shadowOut2->shadowOut.
+    add(m_atrousSet[0], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOutStore);
+    add(m_atrousSet[0], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOut2Store);
+    add(m_atrousSet[0], 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &normStore);
+    add(m_atrousSet[0], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
+    add(m_atrousSet[1], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOut2Store);
+    add(m_atrousSet[1], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOutStore);
+    add(m_atrousSet[1], 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &normStore);
+    add(m_atrousSet[1], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
     add(m_tonemapSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrSamp);
     add(m_tonemapSetDlss, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &dlssSamp);
     vkUpdateDescriptorSets(eng.device(), (uint32_t)w.size(), w.data(), 0, nullptr);
@@ -718,10 +783,13 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_resolveLayout) vkDestroyPipelineLayout(device, m_resolveLayout, nullptr);
     if (m_compositePipeline) vkDestroyPipeline(device, m_compositePipeline, nullptr);
     if (m_compositeLayout) vkDestroyPipelineLayout(device, m_compositeLayout, nullptr);
+    if (m_atrousPipeline) vkDestroyPipeline(device, m_atrousPipeline, nullptr);
+    if (m_atrousLayout) vkDestroyPipelineLayout(device, m_atrousLayout, nullptr);
     if (m_tonemapPipeline) vkDestroyPipeline(device, m_tonemapPipeline, nullptr);
     if (m_tonemapLayout) vkDestroyPipelineLayout(device, m_tonemapLayout, nullptr);
     if (m_resolveSetLayout) vkDestroyDescriptorSetLayout(device, m_resolveSetLayout, nullptr);
     if (m_compositeSetLayout) vkDestroyDescriptorSetLayout(device, m_compositeSetLayout, nullptr);
+    if (m_atrousSetLayout) vkDestroyDescriptorSetLayout(device, m_atrousSetLayout, nullptr);
     if (m_tonemapSetLayout) vkDestroyDescriptorSetLayout(device, m_tonemapSetLayout, nullptr);
     if (m_pool) vkDestroyDescriptorPool(device, m_pool, nullptr);
 }
@@ -777,16 +845,17 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         settings.shadowsEnabled ? 1.0f : 0.0f,
         (float)(frame & 0xFFFF));                             // frame index for dither
 
-    // Temporal shadow denoise state. Reset history when it's the first frame, the
-    // sun moved (shadows changed), or denoise is off. When DLSS Ray Reconstruction
-    // is active it owns denoising — feed it the RAW noisy shadow (our accumulation off).
-    bool denoise = settings.shadowDenoise && !dlssActive;
+    // Denoise mode: 0 Off, 1 Temporal, 2 SVGF (= temporal + à-trous). DLSS Ray
+    // Reconstruction owns denoising when active -> feed it RAW shadow (our pipeline off).
+    int  mode    = dlssActive ? 0 : settings.shadowDenoiseMode;
+    bool temporalOn = mode >= 1;     // temporal accumulation (modes 1,2)
+    bool svgfOn     = mode == 2;     // à-trous spatial filter
     bool sunMoved = settings.sunAzimuthDeg != m_prevSunAz ||
                     settings.sunElevationDeg != m_prevSunEl;
-    bool reset = !m_haveHistory || sunMoved || !denoise;
+    bool reset = !m_haveHistory || sunMoved || !temporalOn;
     glm::vec4 temporal(reset ? 1.0f : 0.0f,
                        settings.shadowHistAlpha,
-                       denoise ? 1.0f : 0.0f, 0.0f);
+                       temporalOn ? 1.0f : 0.0f, 0.0f);
     uint32_t cur = m_histIndex;
 
     // ===================== Pass A: Visibility (raster) =====================
@@ -914,14 +983,56 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
     m_haveHistory = true;
     m_histIndex = 1 - cur;
 
+    // ===================== Pass B1: À-trous (SVGF spatial shadow filter) =====================
+    // Edge-aware wavelet, ping-pong shadowOut <-> shadowOut2 with doubling step.
+    // finalInB tracks which buffer holds the result (composite reads that one).
+    bool finalInB = false;
+    bool doAtrous = svgfOn && settings.shadowsEnabled && !settings.debugMotionVecs;
+    if (doAtrous) {
+        TracyVkZone(tracy, cmd, "A-trous");
+        m_eng->cmdBeginLabel(cmd, "A-trous Pass (SVGF)");
+        // normal + directLight (depth in .a): resolve wrote them -> à-trous reads them.
+        for (VkImage g : {m_gbufNormal.image, m_directLight.image})
+            imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+
+        int iters = std::max(1, std::min(settings.svgfIterations, 5));
+        for (int i = 0; i < iters; i++) {
+            // Hazard sync between passes: both shadow buffers read+write either way.
+            for (VkImage g : {m_shadowOut.image, m_shadowOut2.image})
+                imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_atrousPipeline);
+            // set[0]: shadowOut->shadowOut2, set[1]: shadowOut2->shadowOut.
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_atrousLayout,
+                                    0, 1, &m_atrousSet[i & 1], 0, nullptr);
+            AtrousPush ap{glm::uvec2(extent.width, extent.height), 1 << i,
+                          settings.svgfPhiNormal, settings.svgfPhiDepth};
+            vkCmdPushConstants(cmd, m_atrousLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(AtrousPush), &ap);
+            vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+            finalInB = ((i & 1) == 0); // even pass writes shadowOut2 (B)
+        }
+        m_eng->cmdEndLabel(cmd);
+    }
+
     // ===================== Pass B2: Composite (deferred shadow recombine) =====================
     // hdr (ambient) += directLight * shadow. Skipped in motion-vector debug (resolve already
-    // wrote the debug visualization straight into hdr). (À-trous filtering lands in D2.)
+    // wrote the debug visualization straight into hdr).
     if (!settings.debugMotionVecs) {
         TracyVkZone(tracy, cmd, "Composite");
         m_eng->cmdBeginLabel(cmd, "Composite Pass (shadow recombine)");
-        // directLight + shadowOut: resolve wrote them (GENERAL) -> composite reads them.
-        for (VkImage g : {m_directLight.image, m_shadowOut.image})
+        VkImage shadowFinalImg = finalInB ? m_shadowOut2.image : m_shadowOut.image;
+        VkDescriptorSet compSet = finalInB ? m_compositeSetB : m_compositeSet;
+        // directLight + final shadow: written (resolve or à-trous) -> composite reads them.
+        for (VkImage g : {m_directLight.image, shadowFinalImg})
             imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
@@ -935,7 +1046,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_compositePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_compositeLayout,
-                                0, 1, &m_compositeSet, 0, nullptr);
+                                0, 1, &compSet, 0, nullptr);
         CompositePush cp{glm::uvec2(extent.width, extent.height)};
         vkCmdPushConstants(cmd, m_compositeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(CompositePush), &cp);

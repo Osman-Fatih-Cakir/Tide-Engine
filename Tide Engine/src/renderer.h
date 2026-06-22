@@ -88,12 +88,21 @@ private:
     VkDescriptorSetLayout m_resolveSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet       m_resolveSet[2]    = {VK_NULL_HANDLE, VK_NULL_HANDLE};
 
+    // À-trous pass (compute, SVGF spatial): edge-aware filter of the shadow scalar,
+    // ping-ponging shadowOut <-> shadowOut2. Two sets for the two directions.
+    VkPipeline            m_atrousPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout      m_atrousLayout   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_atrousSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_atrousSet[2]    = {VK_NULL_HANDLE, VK_NULL_HANDLE}; // [0]=A->B, [1]=B->A
+
     // Composite pass (compute): hdr = ambient + directLight * shadow. set0 =
-    // { directLight(read), shadow(read), hdr(read/write) }.
+    // { directLight(read), shadow(read), hdr(read/write) }. Two sets: one reads
+    // shadowOut (Off/Temporal/RR), one reads shadowOut2 (after odd-count à-trous).
     VkPipeline            m_compositePipeline = VK_NULL_HANDLE;
     VkPipelineLayout      m_compositeLayout   = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_compositeSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSet       m_compositeSet       = VK_NULL_HANDLE;
+    VkDescriptorSet       m_compositeSet       = VK_NULL_HANDLE; // shadow from shadowOut
+    VkDescriptorSet       m_compositeSetB      = VK_NULL_HANDLE; // shadow from shadowOut2
 
     // Tonemap pass (fullscreen fragment): set0 = { hdr sampled }.
     VkPipeline            m_tonemapPipeline = VK_NULL_HANDLE;

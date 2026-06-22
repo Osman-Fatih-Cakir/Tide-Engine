@@ -249,7 +249,7 @@ void main() {
     // and ambient (shadow-independent) straight into HDR.
     vec3 direct  = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);
     vec3 ambient = pc.sunDir.w * albedo * ao; // occluded by baked AO (real GI in Faz 7)
-    imageStore(directLightImage, pix, vec4(direct, 1.0));
+    imageStore(directLightImage, pix, vec4(direct, curW)); // .a = linear depth for à-trous edge-stop
     imageStore(shadowOutImage,   pix, vec4(shadow));
     imageStore(hdrImage,         pix, vec4(ambient, 1.0));
 

@@ -13,15 +13,23 @@ struct Settings {
     bool  shadowsEnabled  = true;
     float sunAngularSize  = 0.3f;   // sun cone angle (degrees; larger = softer penumbra)
     int   shadowSamples   = 1;      // rays per pixel (1 = hard shadow)
-    bool  shadowDenoise   = true;   // temporal accumulation of the shadow term
-    float shadowHistAlpha = 0.1f;   // EMA blend (lower = smoother, more lag)
+    // Denoiser / AA selector (single UI choice; maps to the fields below):
+    //   0 Off, 1 Temporal, 2 SVGF, 3 DLSS Ray Reconstruction.
+    int   denoiser = 2;
+    // Derived from `denoiser` by the UI each frame (engine reads these):
+    //   shadowDenoiseMode 0=Off 1=Temporal 2=SVGF (auto 0 while RR active).
+    int   shadowDenoiseMode = 2;
+    float shadowHistAlpha   = 0.1f; // temporal EMA blend (lower = smoother, more lag)
+    int   svgfIterations    = 5;    // à-trous wavelet levels (step 1,2,4,...)
+    float svgfPhiNormal     = 64.0f;// normal edge-stop sharpness (higher = more edge-preserving)
+    float svgfPhiDepth      = 1.0f; // depth edge-stop tolerance (lower = more edge-preserving)
 
     // TAA / DLSS pipeline foundation (Faz 6.5 Aşama A).
     bool  taaJitter       = false;  // sub-pixel Halton jitter — auto-forced on when DLSS is active
     bool  debugMotionVecs = false;  // show motion vectors instead of shaded color
 
-    // DLSS Super Resolution (Faz 6.5 Aşama B). Falls back to native if unavailable.
-    bool  dlssEnabled     = true;
+    // DLSS Ray Reconstruction (Faz 6.5). Derived from `denoiser==3` by the UI.
+    bool  dlssEnabled     = false;
     int   dlssQuality     = 2;      // 0 Perf, 1 Balanced, 2 Quality, 3 UltraPerf, 4 DLAA
 
     // DLSS runtime status (read-only; filled by the engine for the UI).

@@ -131,24 +131,37 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     ImGui::Checkbox("Enabled", &s.shadowsEnabled);
     ImGui::SliderFloat("Softness", &s.sunAngularSize, 0.0f, 5.0f, "%.2f deg");
     ImGui::SliderInt("Samples",    &s.shadowSamples,  1, 16);
-    ImGui::Checkbox("Denoise (temporal)", &s.shadowDenoise);
-    ImGui::SliderFloat("History",  &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
 
-    ImGui::SeparatorText("DLSS Ray Reconstruction (Faz 6.5)");
-    ImGui::Checkbox("Ray Reconstruction", &s.dlssEnabled);
+    // ---- Denoiser / AA: one selector; only the active mode's params are shown. ----
+    ImGui::SeparatorText("Denoiser / AA");
+    const char* denoisers[] = {"Off", "Temporal", "SVGF", "DLSS Ray Reconstruction"};
+    ImGui::Combo("Mode##denoiser", &s.denoiser, denoisers, IM_ARRAYSIZE(denoisers));
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("DLSS 3.5: AI denoise + upscale in one pass.\n"
-                          "When on, our temporal shadow denoiser is bypassed (raw noise -> RR).");
-    const char* dlssModes[] = {"Performance", "Balanced", "Quality", "Ultra Performance", "DLAA"};
-    ImGui::Combo("Mode", &s.dlssQuality, dlssModes, IM_ARRAYSIZE(dlssModes));
-    // Live status: confirms whether RR is really running.
-    if (!s.dlssAvailable) {
-        ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "Status: NOT AVAILABLE (native)");
-    } else if (s.dlssActive) {
-        ImGui::TextColored(ImVec4(0.4f, 1, 0.4f, 1), "Status: ACTIVE (RR)  %ux%u -> %ux%u",
-                           s.renderW, s.renderH, s.displayW, s.displayH);
-    } else {
-        ImGui::TextColored(ImVec4(1, 1, 0.4f, 1), "Status: off (native %ux%u)", s.displayW, s.displayH);
+        ImGui::SetTooltip("Off: raw noisy shadow.\n"
+                          "Temporal: reproject + EMA (time only).\n"
+                          "SVGF: temporal + edge-aware a-trous (time + space).\n"
+                          "DLSS RR: AI denoise + upscale (NGX, render at lower res).");
+    // Map the single selector to the engine-facing fields.
+    s.dlssEnabled       = (s.denoiser == 3);
+    s.shadowDenoiseMode = (s.denoiser <= 2) ? s.denoiser : 0;
+
+    if (s.denoiser == 1) {            // Temporal
+        ImGui::SliderFloat("History", &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
+    } else if (s.denoiser == 2) {     // SVGF
+        ImGui::SliderFloat("History",       &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
+        ImGui::SliderInt("A-trous iters",   &s.svgfIterations,  1, 5);
+        ImGui::SliderFloat("Phi normal",    &s.svgfPhiNormal,   1.0f, 128.0f, "%.0f");
+        ImGui::SliderFloat("Phi depth",     &s.svgfPhiDepth,    0.05f, 4.0f, "%.2f");
+    } else if (s.denoiser == 3) {     // DLSS Ray Reconstruction
+        const char* dlssModes[] = {"Performance", "Balanced", "Quality", "Ultra Performance", "DLAA"};
+        ImGui::Combo("Quality", &s.dlssQuality, dlssModes, IM_ARRAYSIZE(dlssModes));
+        if (!s.dlssAvailable)
+            ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "Status: NOT AVAILABLE (native)");
+        else if (s.dlssActive)
+            ImGui::TextColored(ImVec4(0.4f, 1, 0.4f, 1), "Status: ACTIVE  %ux%u -> %ux%u",
+                               s.renderW, s.renderH, s.displayW, s.displayH);
+        else
+            ImGui::TextColored(ImVec4(1, 1, 0.4f, 1), "Status: off (native %ux%u)", s.displayW, s.displayH);
     }
     ImGui::Checkbox("Debug: motion vectors", &s.debugMotionVecs);
 
