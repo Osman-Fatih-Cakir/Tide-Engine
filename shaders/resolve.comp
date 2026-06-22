@@ -55,6 +55,10 @@ layout(rg16f, set = 1, binding = 4) uniform writeonly image2D motionImage; // pr
 layout(rgba16f, set = 1, binding = 5) uniform writeonly image2D diffuseImage;  // diffuse albedo
 layout(rgba16f, set = 1, binding = 6) uniform writeonly image2D specularImage; // specular F0
 layout(rgba16f, set = 1, binding = 7) uniform writeonly image2D normalImage;   // xyz=world N, w=roughness
+// Deferred shadow split (SVGF): direct sun radiance WITHOUT shadow, + shadow scalar.
+// The composite pass recombines: hdr = ambient + directLight * shadow(filtered).
+layout(rgba16f, set = 1, binding = 8) uniform writeonly image2D directLightImage;
+layout(r16f,    set = 1, binding = 9) uniform writeonly image2D shadowOutImage;
 
 layout(push_constant) uniform Push {
     mat4  viewProj;
@@ -95,6 +99,8 @@ void main() {
         imageStore(diffuseImage, pix, vec4(0.0));                   // RR guides: empty
         imageStore(specularImage, pix, vec4(0.0));
         imageStore(normalImage, pix, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(directLightImage, pix, vec4(0.0));               // composite: ambient(sky)+0
+        imageStore(shadowOutImage, pix, vec4(1.0));
         if (pc.jitter.z > 0.5) imageStore(hdrImage, pix, vec4(0.5, 0.5, 0.0, 1.0));
         return;
     }
@@ -238,13 +244,15 @@ void main() {
     imageStore(specularImage, pix, vec4(specularAlbedo, 1.0));
     imageStore(normalImage,   pix, vec4(N, roughness));
 
-    if (pc.jitter.z > 0.5) {           // debug: visualize motion (R/G = x/y flow)
+    // ----- Deferred shadow split -----
+    // Direct sun term WITHOUT shadow (composite multiplies the denoised shadow back in)
+    // and ambient (shadow-independent) straight into HDR.
+    vec3 direct  = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);
+    vec3 ambient = pc.sunDir.w * albedo * ao; // occluded by baked AO (real GI in Faz 7)
+    imageStore(directLightImage, pix, vec4(direct, 1.0));
+    imageStore(shadowOutImage,   pix, vec4(shadow));
+    imageStore(hdrImage,         pix, vec4(ambient, 1.0));
+
+    if (pc.jitter.z > 0.5)             // debug: visualize motion (composite skipped on CPU)
         imageStore(hdrImage, pix, vec4(motion * 20.0 + 0.5, 0.5, 1.0));
-        return;
-    }
-
-    vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb) * shadow;
-    color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO (real GI in Faz 7)
-
-    imageStore(hdrImage, pix, vec4(color, 1.0));
 }

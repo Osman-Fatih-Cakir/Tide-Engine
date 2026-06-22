@@ -1,0 +1,27 @@
+#version 460
+
+// Deferred shadow composite: recombine the denoised shadow with direct lighting.
+// hdr currently holds the (shadow-independent) ambient term from the resolve pass.
+//   final = ambient + directLight * shadow
+// The shadow input is whatever the denoise pipeline produced (raw, temporal, or the
+// à-trous-filtered visibility). Sky/empty pixels have directLight = 0, so they pass
+// through unchanged.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform readonly  image2D directLightImage;
+layout(r16f,    set = 0, binding = 1) uniform readonly  image2D shadowImage;
+layout(rgba16f, set = 0, binding = 2) uniform           image2D hdrImage; // read ambient, write final
+
+layout(push_constant) uniform Push { uvec2 screenSize; } pc;
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= int(pc.screenSize.x) || pix.y >= int(pc.screenSize.y)) return;
+
+    vec3  ambient = imageLoad(hdrImage, pix).rgb;
+    vec3  direct  = imageLoad(directLightImage, pix).rgb;
+    float shadow  = imageLoad(shadowImage, pix).r;
+
+    imageStore(hdrImage, pix, vec4(ambient + direct * shadow, 1.0));
+}

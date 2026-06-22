@@ -57,6 +57,9 @@ private:
     Image      m_gbufDiffuse{};         // RGBA16F diffuse albedo (RR guide)
     Image      m_gbufSpecular{};        // RGBA16F specular F0 (RR guide)
     Image      m_gbufNormal{};          // RGBA16F world normal + packed roughness (RR guide)
+    Image      m_directLight{};         // RGBA16F unshadowed direct sun radiance (deferred split)
+    Image      m_shadowOut{};           // R16F shadow visibility to composite (à-trous ping A)
+    Image      m_shadowOut2{};          // R16F à-trous ping B
     Image      m_dlssOutput{};          // RGBA16F display-res HDR (DLSS-D denoise+upscale target)
     VkExtent2D m_extent = {};           // render resolution
     VkExtent2D m_displayExtent = {};
@@ -84,6 +87,13 @@ private:
     VkPipelineLayout      m_resolveLayout   = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_resolveSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet       m_resolveSet[2]    = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+
+    // Composite pass (compute): hdr = ambient + directLight * shadow. set0 =
+    // { directLight(read), shadow(read), hdr(read/write) }.
+    VkPipeline            m_compositePipeline = VK_NULL_HANDLE;
+    VkPipelineLayout      m_compositeLayout   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_compositeSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_compositeSet       = VK_NULL_HANDLE;
 
     // Tonemap pass (fullscreen fragment): set0 = { hdr sampled }.
     VkPipeline            m_tonemapPipeline = VK_NULL_HANDLE;
