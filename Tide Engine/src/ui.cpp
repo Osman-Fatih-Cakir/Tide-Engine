@@ -134,15 +134,18 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     ImGui::Checkbox("Denoise (temporal)", &s.shadowDenoise);
     ImGui::SliderFloat("History",  &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
 
-    ImGui::SeparatorText("DLSS (Faz 6.5)");
-    ImGui::Checkbox("DLSS", &s.dlssEnabled);
+    ImGui::SeparatorText("DLSS Ray Reconstruction (Faz 6.5)");
+    ImGui::Checkbox("Ray Reconstruction", &s.dlssEnabled);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("DLSS 3.5: AI denoise + upscale in one pass.\n"
+                          "When on, our temporal shadow denoiser is bypassed (raw noise -> RR).");
     const char* dlssModes[] = {"Performance", "Balanced", "Quality", "Ultra Performance", "DLAA"};
-    ImGui::Combo("DLSS Mode", &s.dlssQuality, dlssModes, IM_ARRAYSIZE(dlssModes));
-    // Live status: confirms whether DLSS is really upscaling.
+    ImGui::Combo("Mode", &s.dlssQuality, dlssModes, IM_ARRAYSIZE(dlssModes));
+    // Live status: confirms whether RR is really running.
     if (!s.dlssAvailable) {
         ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "Status: NOT AVAILABLE (native)");
     } else if (s.dlssActive) {
-        ImGui::TextColored(ImVec4(0.4f, 1, 0.4f, 1), "Status: ACTIVE  %ux%u -> %ux%u",
+        ImGui::TextColored(ImVec4(0.4f, 1, 0.4f, 1), "Status: ACTIVE (RR)  %ux%u -> %ux%u",
                            s.renderW, s.renderH, s.displayW, s.displayH);
     } else {
         ImGui::TextColored(ImVec4(1, 1, 0.4f, 1), "Status: off (native %ux%u)", s.displayW, s.displayH);

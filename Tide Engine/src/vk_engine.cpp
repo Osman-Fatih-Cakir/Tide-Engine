@@ -648,14 +648,16 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
         // Leaves the swapchain image in COLOR_ATTACHMENT_OPTIMAL.
         if (m_scene.indexCount > 0) {
             float aspect = (float)m_renderExtent.width / (float)m_renderExtent.height;
-            glm::mat4 viewProj = m_camera.proj(aspect) * m_camera.view();
+            glm::mat4 view = m_camera.view();
+            glm::mat4 proj = m_camera.proj(aspect);
+            glm::mat4 viewProj = proj * view;
             ZoneScopedN("Renderer Record");
             bool dlssActive = m_dlss.available() && m_settings.dlssEnabled && m_dlss.hasFeature();
             m_settings.dlssAvailable = m_dlss.available();
             m_settings.dlssActive = dlssActive;
             m_settings.renderW = m_renderExtent.width;   m_settings.renderH = m_renderExtent.height;
             m_settings.displayW = m_swapchainExtent.width; m_settings.displayH = m_swapchainExtent.height;
-            m_renderer.record(cmd, m_scene, viewProj, m_camera.position, m_settings,
+            m_renderer.record(cmd, m_scene, viewProj, view, proj, m_camera.position, m_settings,
                               m_renderExtent, m_swapchainExtent,
                               m_swapchainImages[imageIndex], m_swapchainImageViews[imageIndex],
                               m_depthImage, m_depthView, &m_dlss, dlssActive, m_tracyCtx);

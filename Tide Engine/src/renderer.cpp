@@ -137,7 +137,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
 
     // ---- Descriptor set layouts (resolve set1, tonemap set0) ----
     {
-        VkDescriptorSetLayoutBinding b[5]{};
+        VkDescriptorSetLayoutBinding b[8]{};
         b[0].binding = 0; // vis storage image (read)
         b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[0].descriptorCount = 1;
@@ -158,9 +158,15 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         b[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[4].descriptorCount = 1;
         b[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        for (uint32_t i = 5; i <= 7; i++) { // RR guides: diffuse, specular, normal+rough
+            b[i].binding = i;
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 5;
+        lci.bindingCount = 8;
         lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_resolveSetLayout));
     }
@@ -181,7 +187,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     {
         VkDescriptorPoolSize sizes[2]{};
         sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        sizes[0].descriptorCount = 8;  // 2 resolve sets * (vis + hdr + histWrite + motion)
+        sizes[0].descriptorCount = 14; // 2 resolve sets * (vis+hdr+histWrite+motion+diffuse+spec+normal)
         sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         sizes[1].descriptorCount = 4;  // 2 tonemap (hdr/dlss) + 2 resolve sets (histRead)
         VkDescriptorPoolCreateInfo pci{};
@@ -532,6 +538,16 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     m_motion = makeImage(eng, VK_FORMAT_R16G16_SFLOAT,
                          VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                          extent, VK_IMAGE_ASPECT_COLOR_BIT, "Motion Vectors");
+    // Ray Reconstruction guide buffers (render-res). NGX reads them (sampled).
+    m_gbufDiffuse = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
+                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                              extent, VK_IMAGE_ASPECT_COLOR_BIT, "GBuffer Diffuse");
+    m_gbufSpecular = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
+                               VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               extent, VK_IMAGE_ASPECT_COLOR_BIT, "GBuffer Specular");
+    m_gbufNormal = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
+                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                             extent, VK_IMAGE_ASPECT_COLOR_BIT, "GBuffer Normal+Rough");
     // DLSS upscale target (display resolution). STORAGE so NGX can write it;
     // TRANSFER_DST because NGX clears it internally.
     m_dlssOutput = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -569,6 +585,10 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     VkDescriptorImageInfo motionStore{};
     motionStore.imageView = m_motion.view;
     motionStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo diffStore{}, specStore{}, normStore{};
+    diffStore.imageView = m_gbufDiffuse.view;  diffStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    specStore.imageView = m_gbufSpecular.view; specStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    normStore.imageView = m_gbufNormal.view;   normStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkDescriptorImageInfo hdrSamp{};
     hdrSamp.sampler = m_hdrSampler;
     hdrSamp.imageView = m_hdr.view;
@@ -593,6 +613,9 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
         add(m_resolveSet[k], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &histSamp[1 - k]);
         add(m_resolveSet[k], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &histStore[k]);
         add(m_resolveSet[k], 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &motionStore);
+        add(m_resolveSet[k], 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &diffStore);
+        add(m_resolveSet[k], 6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &specStore);
+        add(m_resolveSet[k], 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &normStore);
     }
     add(m_tonemapSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrSamp);
     add(m_tonemapSetDlss, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &dlssSamp);
@@ -605,6 +628,9 @@ void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_shadowHist[0]);
     destroyImage(eng.allocator(), eng.device(), m_shadowHist[1]);
     destroyImage(eng.allocator(), eng.device(), m_motion);
+    destroyImage(eng.allocator(), eng.device(), m_gbufDiffuse);
+    destroyImage(eng.allocator(), eng.device(), m_gbufSpecular);
+    destroyImage(eng.allocator(), eng.device(), m_gbufNormal);
     destroyImage(eng.allocator(), eng.device(), m_dlssOutput);
 }
 
@@ -630,7 +656,8 @@ void Renderer::destroy(VulkanEngine& eng) {
 // Per-frame recording.
 // ---------------------------------------------------------------------------
 void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
-                      const glm::mat4& viewProj, const glm::vec3& cameraPos,
+                      const glm::mat4& viewProj, const glm::mat4& view, const glm::mat4& proj,
+                      const glm::vec3& cameraPos,
                       const Settings& settings,
                       VkExtent2D renderExtent, VkExtent2D displayExtent,
                       VkImage swapchainImage, VkImageView swapchainView,
@@ -677,13 +704,15 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         (float)(frame & 0xFFFF));                             // frame index for dither
 
     // Temporal shadow denoise state. Reset history when it's the first frame, the
-    // sun moved (shadows changed), or denoise is off.
+    // sun moved (shadows changed), or denoise is off. When DLSS Ray Reconstruction
+    // is active it owns denoising — feed it the RAW noisy shadow (our accumulation off).
+    bool denoise = settings.shadowDenoise && !dlssActive;
     bool sunMoved = settings.sunAzimuthDeg != m_prevSunAz ||
                     settings.sunElevationDeg != m_prevSunEl;
-    bool reset = !m_haveHistory || sunMoved || !settings.shadowDenoise;
+    bool reset = !m_haveHistory || sunMoved || !denoise;
     glm::vec4 temporal(reset ? 1.0f : 0.0f,
                        settings.shadowHistAlpha,
-                       settings.shadowDenoise ? 1.0f : 0.0f, 0.0f);
+                       denoise ? 1.0f : 0.0f, 0.0f);
     uint32_t cur = m_histIndex;
 
     // ===================== Pass A: Visibility (raster) =====================
@@ -770,11 +799,16 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-        // Motion vectors: fully overwritten each frame.
+        // Motion vectors + RR guide buffers: fully overwritten each frame.
         imgBarrier(cmd, m_motion.image, VK_IMAGE_ASPECT_COLOR_BIT,
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        for (VkImage g : {m_gbufDiffuse.image, m_gbufSpecular.image, m_gbufNormal.image})
+            imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_resolvePipeline);
         VkDescriptorSet sets[2] = {scene.descriptorSet, m_resolveSet[cur]};
@@ -910,14 +944,24 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT,
                    VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+        // RR guide buffers: written by resolve (GENERAL) -> read by NGX.
+        for (VkImage g : {m_gbufDiffuse.image, m_gbufSpecular.image, m_gbufNormal.image})
+            imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
         imgBarrier(cmd, m_dlssOutput.image, VK_IMAGE_ASPECT_COLOR_BIT,
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
                    VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
         dlss->evaluate(cmd, m_hdr.image, m_hdr.view, depthImage, depthView,
-                       m_motion.image, m_motion.view, m_dlssOutput.image, m_dlssOutput.view,
-                       renderExtent, jitterPixels, m_dlssReset);
+                       m_motion.image, m_motion.view,
+                       m_gbufDiffuse.image, m_gbufDiffuse.view,
+                       m_gbufSpecular.image, m_gbufSpecular.view,
+                       m_gbufNormal.image, m_gbufNormal.view,
+                       m_dlssOutput.image, m_dlssOutput.view,
+                       renderExtent, jitterPixels, view, proj, m_dlssReset);
         m_dlssReset = false;
         m_eng->cmdEndLabel(cmd);
     }

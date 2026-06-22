@@ -51,6 +51,10 @@ layout(rgba16f, set = 1, binding = 1) uniform writeonly image2D hdrImage;
 layout(set = 1, binding = 2) uniform sampler2D shadowHistRead;     // R=visibility, G=linear depth
 layout(rg16f, set = 1, binding = 3) uniform writeonly image2D shadowHistWrite;
 layout(rg16f, set = 1, binding = 4) uniform writeonly image2D motionImage; // prevUV - curUV (for DLSS)
+// Ray Reconstruction guide buffers (always written; consumed only when RR active).
+layout(rgba16f, set = 1, binding = 5) uniform writeonly image2D diffuseImage;  // diffuse albedo
+layout(rgba16f, set = 1, binding = 6) uniform writeonly image2D specularImage; // specular F0
+layout(rgba16f, set = 1, binding = 7) uniform writeonly image2D normalImage;   // xyz=world N, w=roughness
 
 layout(push_constant) uniform Push {
     mat4  viewProj;
@@ -88,6 +92,9 @@ void main() {
         imageStore(hdrImage, pix, vec4(0.02, 0.03, 0.05, 1.0)); // empty -> dim sky
         imageStore(shadowHistWrite, pix, vec4(1.0, 1e6, 0.0, 0.0)); // lit + far depth
         imageStore(motionImage, pix, vec4(0.0));                    // sky: no motion
+        imageStore(diffuseImage, pix, vec4(0.0));                   // RR guides: empty
+        imageStore(specularImage, pix, vec4(0.0));
+        imageStore(normalImage, pix, vec4(0.0, 0.0, 0.0, 1.0));
         if (pc.jitter.z > 0.5) imageStore(hdrImage, pix, vec4(0.5, 0.5, 0.0, 1.0));
         return;
     }
@@ -221,6 +228,15 @@ void main() {
         }
     }
     imageStore(motionImage, pix, vec4(motion, 0.0, 0.0));
+
+    // ----- Ray Reconstruction guide buffers -----
+    // Diffuse albedo (energy that goes to the Lambert term) and specular F0
+    // (dielectric 0.04, metals tint by albedo). World-space N + packed roughness.
+    vec3 diffuseAlbedo  = albedo * (1.0 - metallic);
+    vec3 specularAlbedo = mix(vec3(0.04), albedo, metallic);
+    imageStore(diffuseImage,  pix, vec4(diffuseAlbedo, 1.0));
+    imageStore(specularImage, pix, vec4(specularAlbedo, 1.0));
+    imageStore(normalImage,   pix, vec4(N, roughness));
 
     if (pc.jitter.z > 0.5) {           // debug: visualize motion (R/G = x/y flow)
         imageStore(hdrImage, pix, vec4(motion * 20.0 + 0.5, 0.5, 1.0));

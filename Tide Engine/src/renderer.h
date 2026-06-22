@@ -34,7 +34,8 @@ public:
     // dlssActive, upscales render-res HDR to display-res before tonemap.
     // Leaves the swapchain image in COLOR_ATTACHMENT_OPTIMAL.
     void record(VkCommandBuffer cmd, const Scene& scene,
-                const glm::mat4& viewProj, const glm::vec3& cameraPos,
+                const glm::mat4& viewProj, const glm::mat4& view, const glm::mat4& proj,
+                const glm::vec3& cameraPos,
                 const Settings& settings,
                 VkExtent2D renderExtent, VkExtent2D displayExtent,
                 VkImage swapchainImage, VkImageView swapchainView,
@@ -53,7 +54,10 @@ private:
     Image      m_hdr{};                 // RGBA16F linear radiance
     Image      m_shadowHist[2]{};       // RG16F temporal shadow: R=visibility, G=linear depth
     Image      m_motion{};              // RG16F screen-space motion vectors (prev - cur UV), for DLSS
-    Image      m_dlssOutput{};          // RGBA16F display-res HDR (DLSS upscale target)
+    Image      m_gbufDiffuse{};         // RGBA16F diffuse albedo (RR guide)
+    Image      m_gbufSpecular{};        // RGBA16F specular F0 (RR guide)
+    Image      m_gbufNormal{};          // RGBA16F world normal + packed roughness (RR guide)
+    Image      m_dlssOutput{};          // RGBA16F display-res HDR (DLSS-D denoise+upscale target)
     VkExtent2D m_extent = {};           // render resolution
     VkExtent2D m_displayExtent = {};
     bool       m_dlssReset = true;      // drop DLSS temporal history (set on (re)create)

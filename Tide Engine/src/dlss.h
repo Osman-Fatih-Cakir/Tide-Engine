@@ -7,9 +7,11 @@
 struct NVSDK_NGX_Parameter;
 struct NVSDK_NGX_Handle;
 
-// DLSS Super Resolution via raw NVIDIA NGX (no Streamline abstraction).
-// Renders the scene at a lower resolution and upscales to display resolution,
-// using jitter + motion vectors + depth (Faz 6.5). Hardcoded, single feature.
+// DLSS 3.5 Ray Reconstruction (DLSS-D) via raw NVIDIA NGX (no Streamline).
+// One unified model: denoises the noisy ray-traced lighting AND upscales render->
+// display resolution. Needs jitter + motion + HW depth + guide buffers (diffuse/
+// specular albedo, world normal + packed roughness) + camera matrices (Faz 6.5 C).
+// Hardcoded, single feature. (Super Resolution path was removed — RR only.)
 class Dlss {
 public:
     // Quality presets (map to NVSDK_NGX_PerfQuality_Value). DLAA = native res.
@@ -36,15 +38,20 @@ public:
     void releaseFeature();
     bool hasFeature() const { return m_feature != nullptr; }
 
-    // Per-frame upscale. color/depth/motion are render-res inputs, out is
-    // display-res. ALL must be in VK_IMAGE_LAYOUT_GENERAL. jitterPixels in
-    // render-pixel space [-0.5,0.5]. reset=true drops temporal history.
+    // Per-frame denoise+upscale (Ray Reconstruction). color (noisy lit) / depth /
+    // motion / diffuse / specular / normal are render-res inputs; out is display-res.
+    // ALL must be in VK_IMAGE_LAYOUT_GENERAL. jitterPixels in render-pixel space
+    // [-0.5,0.5]. view = world->view, proj = unjittered view->clip. reset drops history.
     void evaluate(VkCommandBuffer cmd,
                   VkImage colorImg, VkImageView colorView,
                   VkImage depthImg, VkImageView depthView,
                   VkImage motionImg, VkImageView motionView,
+                  VkImage diffuseImg, VkImageView diffuseView,
+                  VkImage specularImg, VkImageView specularView,
+                  VkImage normalImg, VkImageView normalView,
                   VkImage outImg, VkImageView outView,
-                  VkExtent2D renderExtent, glm::vec2 jitterPixels, bool reset);
+                  VkExtent2D renderExtent, glm::vec2 jitterPixels,
+                  const glm::mat4& view, const glm::mat4& proj, bool reset);
 
 private:
     bool                 m_available    = false;

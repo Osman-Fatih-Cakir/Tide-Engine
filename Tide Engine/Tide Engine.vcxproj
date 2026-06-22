@@ -125,7 +125,8 @@
       <AdditionalOptions>/ignore:4099 %(AdditionalOptions)</AdditionalOptions>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "$(OutDir)"</Command>
+      <Command>xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "$(OutDir)"
+xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -148,7 +149,8 @@
       <AdditionalOptions>/ignore:4099 %(AdditionalOptions)</AdditionalOptions>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "$(OutDir)"</Command>
+      <Command>xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "$(OutDir)"
+xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
