@@ -185,11 +185,11 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     ImGui::SetItemTooltip("Job: the froxel volumetric god-ray pipeline (scatter -> integrate -> apply).\n"
                           "Result: light shafts in the air. Off = scene renders exactly as before.");
     if (s.fogEnabled) {
-        const char* fogQ[] = {"Low", "Medium", "High"};
-        ImGui::Combo("Grid quality", &s.fogQuality, fogQ, IM_ARRAYSIZE(fogQ));
-        ImGui::SetItemTooltip("Job: froxel grid resolution (Low 128x72x48 / Med 160x90x64 / High 240x135x96).\n"
-                              "Result: sharper, less blocky beams.\n"
-                              "Higher = crisper + less leak, but more GPU cost. Lower = faster, coarser.");
+        const char* fogQ[] = {"160x90x64", "240x135x96", "320x180x128", "480x270x160 (Ultra)"};
+        ImGui::Combo("Froxel res", &s.fogQuality, fogQ, IM_ARRAYSIZE(fogQ));
+        ImGui::SetItemTooltip("Job: 3D froxel grid resolution (X,Y screen-aligned, Z depth slices).\n"
+                              "Result: higher XY resolves thin light shafts (small blind gaps); crisper, less blocky.\n"
+                              "Higher = sharper + more realistic shafts + less leak, but more GPU cost. Ultra is heavy.");
         ImGui::Checkbox("Jitter (temporal AA)", &s.fogJitter);
         ImGui::SetItemTooltip("Job: nudges each froxel's shadow sample a little every frame; temporal averages them.\n"
                               "Result: turns hard 0/1 shadow edges into soft penumbra.\n"

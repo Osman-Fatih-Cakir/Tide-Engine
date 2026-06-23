@@ -48,7 +48,7 @@ struct Settings {
 
     // Volumetric fog (Faz 7) — froxel-based, RT-shadowed god rays.
     bool  fogEnabled      = false; // default off so density-0 path is a clean regression
-    int   fogQuality      = 1;     // froxel grid preset: 0 Low, 1 Medium, 2 High
+    int   fogQuality      = 2;     // froxel grid preset (0..3); see fogGridDim() / UI labels
     float fogDensity      = 0.04f; // extinction per world unit (higher = thicker)
     float fogScatter      = 0.7f;  // in-scatter intensity (scattering albedo)
     float fogAnisotropy   = 0.76f; // Henyey-Greenstein g (forward scattering -> beams)

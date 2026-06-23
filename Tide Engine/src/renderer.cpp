@@ -65,12 +65,15 @@ struct FogApplyPush {
 // Froxel near extent (world units). Slightly past the camera near plane.
 static constexpr float FOG_ZNEAR = 0.1f;
 
-// Froxel grid dimensions for a quality preset (0 Low, 1 Medium, 2 High).
+// Froxel grid dimensions per quality preset. Higher XY resolves thin light shafts
+// (small blind gaps); higher Z sharpens shaft depth. Must match the UI labels.
 static VkExtent3D fogGridDim(int quality) {
     switch (quality) {
-        case 0:  return {128, 72, 48};
-        case 2:  return {240, 135, 96};
-        default: return {160, 90, 64};
+        case 0:  return {160, 90, 64};
+        case 1:  return {240, 135, 96};
+        case 2:  return {320, 180, 128};
+        case 3:  return {480, 270, 160}; // Ultra
+        default: return {240, 135, 96};
     }
 }
 struct TransparentPush {
