@@ -38,9 +38,7 @@
 #include <tracy/Tracy.hpp>
 #include <tracy/TracyVulkan.hpp>
 
-// Log to the Visual Studio Output window (no console window needed).
-// Every line is prefixed with [TIDE][LEVEL] so our output is easy to spot/filter
-// among the DLL-load spam.
+// Logs output directly to the Visual Studio Output window.
 inline void TE_LogLevel(const char* level, const char* fmt, ...) {
     char body[1024];
     va_list args;
