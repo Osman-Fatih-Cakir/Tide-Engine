@@ -79,26 +79,20 @@ void main() {
         }
     }
 
-    // ----- Conservative depth cull (step 2) -----
-    // A froxel contributes light only if it is FULLY in front of the nearest surface
-    // in its screen footprint. If its far face reaches/passes that surface, part of
-    // it is behind a wall -> zero its in-scatter. Errs to less light (clean) instead
-    // of leaking light through walls. Done after temporal so the cut is immediate.
+    // ----- Soft depth occlusion (step 2, smoothed) -----
+    // Fade the froxel's in-scatter by the FRACTION of its depth extent that lies in
+    // front of the visible surface (center sample). Fully in front -> full light,
+    // fully behind -> 0, straddling -> partial. Continuous, so no chunky holes or
+    // pop when the camera moves; still kills light leaking behind walls.
     if (pc.misc.y > 0.5) {
-        vec2 ss = pc.misc.zw;                               // screen size
-        vec2 hfp = ss / vec2(dim.xy) * 0.5;                // half footprint (pixels)
-        vec2 ctr = (vec2(c.xy) + 0.5) / vec2(dim.xy) * ss; // footprint center pixel
-        vec2 offs[5] = vec2[5](vec2(0.0), vec2(-1.0, -1.0), vec2(1.0, -1.0),
-                               vec2(-1.0, 1.0), vec2(1.0, 1.0));
-        float minD = 1e30;
-        for (int i = 0; i < 5; i++) {
-            ivec2 px = ivec2(clamp(ctr + offs[i] * hfp, vec2(0.0), ss - 1.0));
-            float d = imageLoad(directLight, px).a;        // surface view depth (0 = sky)
-            if (d > 0.0) minD = min(minD, d);
-        }
-        if (minD < 1e29) {
-            float farZ = froxelSliceToViewZ((float(c.z) + 1.0) / float(dim.z), zn, zf);
-            if (farZ >= minD) inScatter = vec3(0.0);
+        vec2 ss = pc.misc.zw;
+        ivec2 px = ivec2(clamp((vec2(c.xy) + 0.5) / vec2(dim.xy) * ss, vec2(0.0), ss - 1.0));
+        float d = imageLoad(directLight, px).a;            // surface view depth (0 = sky)
+        if (d > 0.0) {
+            float nearZ = froxelSliceToViewZ(float(c.z)        / float(dim.z), zn, zf);
+            float farZ  = froxelSliceToViewZ((float(c.z) + 1.0) / float(dim.z), zn, zf);
+            float frontFrac = clamp((d - nearZ) / max(farZ - nearZ, 1e-4), 0.0, 1.0);
+            inScatter *= frontFrac;
         }
     }
 
