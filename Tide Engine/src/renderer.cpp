@@ -1321,18 +1321,19 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
     }
 
     // ===================== Volumetric Fog (Faz 7) =====================
-    // Froxel scatter (1 RT shadow ray each) -> Z integrate -> apply onto HDR. Runs
-    // after the opaque composite, before transparency, so RR later denoises+upscales
-    // the fogged image. directLight.a carries linear depth for the apply lookup.
+    // Build the froxel volume now (scatter -> integrate). The APPLY onto HDR is
+    // deferred until AFTER the transparent pass so glass is fogged too (it draws
+    // later and writes no depth). directLight.a carries linear depth for the lookup.
+    bool fogOn = settings.fogEnabled && !settings.debugMotionVecs;
+    glm::uvec4 fogGrid(m_froxelDim.width, m_froxelDim.height, m_froxelDim.depth, frame & 0xFFFFu);
+    float fogZn = FOG_ZNEAR, fogZf = settings.fogMaxDistance;
     {
-        bool fogOn = settings.fogEnabled && !settings.debugMotionVecs;
         if (fogOn) {
             TracyVkZone(tracy, cmd, "Volumetric");
-            m_eng->cmdBeginLabel(cmd, "Volumetric Fog");
+            m_eng->cmdBeginLabel(cmd, "Volumetric Build");
             uint32_t fcur = m_fogHistIndex;
-            glm::uvec4 grid(m_froxelDim.width, m_froxelDim.height, m_froxelDim.depth,
-                            frame & 0xFFFFu);
-            float zn = FOG_ZNEAR, zf = settings.fogMaxDistance;
+            glm::uvec4 grid = fogGrid;
+            float zn = fogZn, zf = fogZf;
             bool fogReset = !m_haveFogHistory || sunMoved;
 
             // ---- Scatter (per froxel) ----
@@ -1387,29 +1388,6 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
             vkCmdPushConstants(cmd, m_fogIntegrateLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(FogIntegratePush), &ip);
             vkCmdDispatch(cmd, (m_froxelDim.width + 7) / 8, (m_froxelDim.height + 7) / 8, 1);
-
-            // ---- Apply onto HDR ----
-            imgBarrier(cmd, m_froxelIntegrated.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
-            imgBarrier(cmd, m_directLight.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
-            imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogApplyPipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogApplyLayout,
-                                    0, 1, &m_fogApplySet, 0, nullptr);
-            FogApplyPush ap{grid, glm::uvec2(extent.width, extent.height), glm::vec2(zn, zf)};
-            vkCmdPushConstants(cmd, m_fogApplyLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(FogApplyPush), &ap);
-            vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
 
             m_eng->cmdEndLabel(cmd);
             m_haveFogHistory = true;
@@ -1507,6 +1485,41 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
     VkImageLayout hdrOld = hasTransparent
         ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
+
+    // ===================== Volumetric Fog APPLY (after transparency) =====================
+    // Composites the prebuilt fog volume onto HDR now, so glass (drawn above) is fogged
+    // too. Uses the opaque depth (directLight.a) for the slice -> glass is fogged by the
+    // distance to the surface behind it (cheap; transparency writes no depth anyway).
+    if (fogOn) {
+        TracyVkZone(tracy, cmd, "Volumetric Apply");
+        m_eng->cmdBeginLabel(cmd, "Volumetric Fog Apply");
+        imgBarrier(cmd, m_froxelIntegrated.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+        imgBarrier(cmd, m_directLight.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+        // hdr: from its post-transparent state -> GENERAL for compute read+write.
+        imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   hdrStage, hdrAccess,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   hdrOld, VK_IMAGE_LAYOUT_GENERAL);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogApplyPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogApplyLayout,
+                                0, 1, &m_fogApplySet, 0, nullptr);
+        FogApplyPush ap{fogGrid, glm::uvec2(extent.width, extent.height), glm::vec2(fogZn, fogZf)};
+        vkCmdPushConstants(cmd, m_fogApplyLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(FogApplyPush), &ap);
+        vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+        m_eng->cmdEndLabel(cmd);
+        // HDR now lives in GENERAL, last written by the fog apply compute.
+        hdrStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        hdrAccess = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        hdrOld = VK_IMAGE_LAYOUT_GENERAL;
+    }
 
     // ===================== Pass D0: DLSS upscale (render-res HDR -> display-res) =====================
     // The tonemap then reads m_dlssOutput. NGX expects all resources in GENERAL.
