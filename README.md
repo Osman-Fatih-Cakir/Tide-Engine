@@ -40,6 +40,12 @@ The engine supports interchangeable, mutually exclusive denoisers to clean up th
 *   **Temporal & Spatial Filtering:** Uses temporal reprojection, per-froxel jittering, and 3D blurring to resolve noise.
 *   **Soft Depth Occlusion:** Prevents light leaking artifacts with precise depth-fading.
 
+### 💡 Realtime Global Illumination (DDGI)
+*   **World-Space Probe Grid:** A regular grid of irradiance probes wraps the scene; each probe traces rays into the TLAS to capture diffuse indirect light, replacing flat ambient with real sun bounces.
+*   **Octahedral Irradiance & Depth Atlases:** Per-probe irradiance and depth/moments are encoded octahedrally into shared atlases, sampled with trilinear + normal-aware weighting.
+*   **Multi-Bounce Feedback:** Probes re-sample the previous frame's irradiance at ray hits (RTXGI-style), so light energy accumulates over multiple bounces and naturally fills the room.
+*   **Leak-Free Visibility:** Exact ray-traced probe visibility (a short occlusion ray per contributing probe) eliminates light leaking through thin walls — no Chebyshev approximation required. Temporal hysteresis stabilizes the result.
+
 ### 🛠️ Developer Tools & Utilities
 *   **Real-time UI:** Immediate feedback and variable tweaking via integrated ImGui.
 *   **Profiling:** Deeply integrated Tracy CPU and GPU markers for granular performance analysis.
@@ -47,8 +53,9 @@ The engine supports interchangeable, mutually exclusive denoisers to clean up th
 
 ## 🚧 Status (Work In Progress)
 
-Tide Engine is currently **WIP**. 
-**Up Next:** Implementing **RT-based DDGI (Dynamic Diffuse Global Illumination)**. The current scene relies on basic ambient lighting for indirect bounces, and the next step is adding a world-space probe grid to capture and inject dynamic multi-bounce GI using the existing TLAS.
+Tide Engine is currently **WIP**.
+**Recently Landed:** **RT-based DDGI (Dynamic Diffuse Global Illumination)** — a world-space probe grid built on the existing TLAS now captures and injects dynamic multi-bounce indirect light, replacing the old flat ambient term with leak-free, ray-traced GI.
+**Up Next:** Ambient occlusion and bloom/post-processing to round out the lighting pipeline.
 
 ## 🚀 Building the Project
 
