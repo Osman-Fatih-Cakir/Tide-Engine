@@ -59,10 +59,11 @@ The engine is built entirely using **Visual Studio 2022**.
    git clone --recursive <repository_url>
    ```
    *(If you already cloned it without `--recursive`, run `git submodule update --init --recursive` in the project folder).*
-2. Open the `Tide Engine.sln` solution file located in the root directory using Visual Studio 2022.
-3. Make sure the target architecture is set to **x64** (Debug or Release).
-4. Build the solution (`Ctrl + Shift + B`).
-5. Run the project!
+2. Double-click **`setup.bat`** (or run it in the terminal) to automatically compile local dependencies (like GLFW).
+3. Open the `Tide Engine.sln` solution file located in the root directory using Visual Studio 2022.
+4. Make sure the target architecture is set to **x64** (Debug or Release).
+5. Build the solution (`Ctrl + Shift + B`).
+6. Run the project!
 
 *Note: External libraries like GLFW, ImGui, Tracy, and GLM are included in the `Dependency/` directory. However, you **must** have the [Vulkan SDK](https://vulkan.lunarg.com/) installed. During the LunarG Vulkan SDK installation, make sure to explicitly select and install the following components:*
 *   **Vulkan Memory Allocator (VMA)**
