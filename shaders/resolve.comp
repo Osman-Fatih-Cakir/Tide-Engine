@@ -5,8 +5,9 @@
 #extension GL_EXT_ray_query : require
 
 #include "pbr.glsl"
-#include "ddgi.glsl"
 #include "sky.glsl"
+// ddgi.glsl is included later (after the scene set), because its ray-traced
+// visibility path references topLevelAS (scene set 0, b5).
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -75,6 +76,11 @@ layout(push_constant) uniform Push {
 } pc;
 
 #include "rtshadow.glsl"
+
+// DDGI helpers — included here so its ray-visibility path sees topLevelAS (declared
+// above in set 0). DDGI_HAS_TLAS enables the exact ray-traced probe visibility.
+#define DDGI_HAS_TLAS
+#include "ddgi.glsl"
 
 // DDGI sample set (set 2): probe params + irradiance/depth atlases. Replaces the
 // flat ambient term with real indirect irradiance when misc.x (use GI) is set.
@@ -264,7 +270,8 @@ void main() {
     // Ambient: flat constant, or DDGI indirect irradiance when GI is enabled.
     vec3 ambient = pc.sunDir.w * albedo * ao; // occluded by baked AO
     if (ddgi.misc.x > 0.5) {
-        vec3 indirect = ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, worldPos, N);
+        // params.y = giIntensity (master multiplier; 1 = physical).
+        vec3 indirect = ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, worldPos, N) * ddgi.params.y;
         ambient = indirect * albedo * ao;
     }
     imageStore(directLightImage, pix, vec4(direct, curW)); // .a = linear depth for à-trous edge-stop

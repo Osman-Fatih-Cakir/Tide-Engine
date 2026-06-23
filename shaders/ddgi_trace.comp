@@ -37,6 +37,9 @@ layout(std430, set = 0, binding = 6) readonly buffer Geometries { GpuGeometry ge
 // ----- DDGI trace set (set 1) -----
 layout(std140, set = 1, binding = 0) uniform DdgiUBO { DdgiParams ddgi; };
 layout(std430, set = 1, binding = 1) writeonly buffer RayRadiance { vec4 rayResult[]; }; // rgb, a=dist
+// Previous frame's atlases, for multi-bounce feedback (read at the hit point).
+layout(set = 1, binding = 2) uniform sampler2D ddgiIrradiance;
+layout(set = 1, binding = 3) uniform sampler2D ddgiDepth;
 
 void main() {
     int probe = int(gl_WorkGroupID.x);
@@ -58,8 +61,8 @@ void main() {
     float dist;
     if (rayQueryGetIntersectionTypeEXT(rq, true) ==
         gl_RayQueryCommittedIntersectionNoneEXT) {
-        // Miss -> sky radiance, "infinite" distance for the depth atlas.
-        radiance = skyColor(dir, normalize(ddgi.sunDir.xyz)) * ddgi.sunDir.w;
+        // Miss -> sky radiance (misc.y = sky GI strength), "infinite" depth.
+        radiance = skyColor(dir, normalize(ddgi.sunDir.xyz)) * ddgi.misc.y;
         dist = maxDist;
     } else {
         uint instID = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
@@ -76,30 +79,48 @@ void main() {
         Vertex a1 = vertices[indices[base + 1u] + g.vertexOffset];
         Vertex a2 = vertices[indices[base + 2u] + g.vertexOffset];
 
-        vec3 hitP = origin + dir * t;
+        // Geometric normal, aligned to the AUTHORED vertex normal so the backface test
+        // is independent of triangle winding (some assets wind inconsistently).
+        vec3 wp0 = (model * vec4(a0.position, 1.0)).xyz;
+        vec3 wp1 = (model * vec4(a1.position, 1.0)).xyz;
+        vec3 wp2 = (model * vec4(a2.position, 1.0)).xyz;
         mat3 nm = transpose(inverse(mat3(model)));
-        vec3 N = normalize(nm * (a0.normal * w.x + a1.normal * w.y + a2.normal * w.z));
-        if (dot(N, dir) > 0.0) N = -N; // face the incoming ray
-        vec2 uv = a0.uv * w.x + a1.uv * w.y + a2.uv * w.z;
+        vec3 Ns = normalize(nm * (a0.normal * w.x + a1.normal * w.y + a2.normal * w.z));
+        vec3 Ng = normalize(cross(wp1 - wp0, wp2 - wp0));
+        if (dot(Ng, Ns) < 0.0) Ng = -Ng; // point Ng the same way the artist intended
+        if (dot(Ng, dir) > 0.0) {
+            // Backface hit -> the probe is on the wrong side of this surface (behind a
+            // wall / outside the room). Emit no light and record a SHORTENED distance so
+            // the depth atlas reports a near occluder -> Chebyshev kills the leak. (RTXGI)
+            radiance = vec3(0.0);
+            dist = t * 0.2;
+        } else {
+            vec3 hitP = origin + dir * t;
+            vec3 N = Ns;
+            if (dot(N, dir) > 0.0) N = -N; // face the incoming ray
+            vec2 uv = a0.uv * w.x + a1.uv * w.y + a2.uv * w.z;
 
-        GpuMaterial m = materials[g.materialIndex];
-        vec3 albedo = m.baseColorFactor.rgb;
-        if (m.baseColorTexture >= 0)
-            albedo *= textureLod(textures[nonuniformEXT(m.baseColorTexture)], uv, 0.0).rgb;
+            GpuMaterial m = materials[g.materialIndex];
+            vec3 albedo = m.baseColorFactor.rgb;
+            if (m.baseColorTexture >= 0)
+                albedo *= textureLod(textures[nonuniformEXT(m.baseColorTexture)], uv, 0.0).rgb;
 
-        // Direct sun (Lambert) with a hard RT shadow.
-        vec3 L = normalize(ddgi.sunDir.xyz);
-        float ndl = max(dot(N, L), 0.0);
-        float vis = 0.0;
-        if (ndl > 0.0 && ddgi.shadowCfg.z > 0.5)
-            vis = rtOccluded(hitP + N * 1e-3, L) ? 0.0 : 1.0;
-        else if (ndl > 0.0)
-            vis = 1.0;
-        radiance = albedo / DDGI_PI * ddgi.sunColor.rgb * ndl * vis;
-        // Sky/ambient fill at the hit so fully shadowed surfaces still feed some
-        // indirect (cheap stand-in for higher bounces). Scaled by the Ambient slider.
-        radiance += albedo * ddgi.sunDir.w;
-        dist = t;
+            // Direct sun (Lambert) with a hard RT shadow.
+            vec3 L = normalize(ddgi.sunDir.xyz);
+            float ndl = max(dot(N, L), 0.0);
+            float vis = 0.0;
+            if (ndl > 0.0 && ddgi.shadowCfg.z > 0.5)
+                vis = rtOccluded(hitP + N * 1e-3, L) ? 0.0 : 1.0;
+            else if (ndl > 0.0)
+                vis = 1.0;
+            radiance = albedo / DDGI_PI * ddgi.sunColor.rgb * ndl * vis;
+            // Multi-bounce: re-emit the previous frame's indirect irradiance arriving at
+            // the hit (misc.z = gain). AAA/RTXGI feedback -> the room fills up naturally.
+            if (ddgi.misc.z > 0.0)
+                radiance += albedo * ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, hitP, N)
+                          * ddgi.misc.z;
+            dist = t;
+        }
     }
     rayResult[probe * DDGI_MAX_RAYS + ray] = vec4(radiance, dist);
 }

@@ -310,15 +310,17 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
 
     // ---- DDGI set layouts (created early; resolve set2 references the sample one) ----
     {
-        // Trace set: b0 UBO, b1 ray-result SSBO (write).
-        VkDescriptorSetLayoutBinding b[2]{};
+        // Trace set: b0 UBO, b1 ray SSBO (write), b2 irradiance + b3 depth (prev-frame
+        // sampled, for multi-bounce feedback).
+        VkDescriptorSetLayoutBinding b[4]{};
         b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[3].binding = 3; b[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        for (int i = 0; i < 4; i++) { b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 2; lci.pBindings = b;
+        lci.bindingCount = 4; lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_ddgiTraceSetLayout));
     }
     {
@@ -895,7 +897,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         sizes[0].descriptorCount = 3;
         sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;        sizes[1].descriptorCount = 2;
         sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;         sizes[2].descriptorCount = 2;
-        sizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[3].descriptorCount = 2;
+        sizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[3].descriptorCount = 4; // trace 2 + sample 2
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pci.maxSets = 3; pci.poolSizeCount = 4; pci.pPoolSizes = sizes;
@@ -1176,9 +1178,11 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     ddgiDepthStore.imageView = m_ddgiDepth.view;      ddgiDepthStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     ddgiIrrSamp.sampler = m_hdrSampler;   ddgiIrrSamp.imageView = m_ddgiIrradiance.view; ddgiIrrSamp.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     ddgiDepthSamp.sampler = m_hdrSampler; ddgiDepthSamp.imageView = m_ddgiDepth.view;    ddgiDepthSamp.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    // Trace: UBO + ray SSBO (write).
+    // Trace: UBO + ray SSBO (write) + prev-frame irradiance/depth (sampled, multi-bounce).
     addBuf(m_ddgiTraceSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &uboInfo);
     addBuf(m_ddgiTraceSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &rayInfo);
+    add(m_ddgiTraceSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ddgiIrrSamp);
+    add(m_ddgiTraceSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ddgiDepthSamp);
     // Update: UBO + ray SSBO (read) + irradiance/depth (storage).
     addBuf(m_ddgiUpdateSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &uboInfo);
     addBuf(m_ddgiUpdateSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &rayInfo);
@@ -1416,7 +1420,10 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                                    settings.giIntensity, settings.giNormalBias,
                                    (float)(frame & 0xFFFF));
         dp.shadowCfg   = glm::vec4(0.0f, 0.0f, settings.shadowsEnabled ? 1.0f : 0.0f, maxDist);
-        dp.misc        = glm::vec4(giOn ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        // misc: x = use GI in resolve, y = sky GI strength, z = multi-bounce gain,
+        //       w = exact ray-traced probe visibility (1) vs Chebyshev (0).
+        dp.misc        = glm::vec4(giOn ? 1.0f : 0.0f, settings.giSkyIntensity,
+                                   settings.giMultiBounce, settings.giRayVisibility ? 1.0f : 0.0f);
         memcpy(m_ddgiUbo.mapped, &dp, sizeof(dp));
 
         if (giOn) {
@@ -1436,6 +1443,12 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
 
             // Prev frame's update read the ray buffer; this frame's trace overwrites it.
             memBarrier(VK_ACCESS_2_SHADER_STORAGE_READ_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+            // Prev frame's atlases (storage-written) -> sampled by trace (multi-bounce feedback).
+            for (VkImage g : {m_ddgiIrradiance.image, m_ddgiDepth.image})
+                imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
 
             // ---- Trace: one workgroup per probe (128 rays/group) ----
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiTracePipeline);
@@ -1446,6 +1459,12 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
 
             // Trace writes -> update reads the ray buffer.
             memBarrier(VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+            // Trace sampled the atlases -> update overwrites them (WAR).
+            for (VkImage g : {m_ddgiIrradiance.image, m_ddgiDepth.image})
+                imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
 
             // ---- Update: gather into irradiance (mode 0) then depth (mode 1) atlases ----
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiUpdatePipeline);

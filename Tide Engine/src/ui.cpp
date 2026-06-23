@@ -235,9 +235,17 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
                           "Result: sunlight bounces off floor/walls and lights shadowed areas with color.\n"
                           "Off = flat constant ambient (exactly as before).");
     if (s.giEnabled) {
-        ImGui::SliderFloat("GI intensity", &s.giIntensity, 0.0f, 8.0f, "%.2f");
-        ImGui::SetItemTooltip("Job: multiplies the sampled indirect irradiance.\n"
-                              "Result: strength of the bounce lighting. 0 = black ambient, 1 = physical.");
+        ImGui::SliderFloat("GI intensity (1=physical)", &s.giIntensity, 0.0f, 8.0f, "%.2f");
+        ImGui::SetItemTooltip("Job: master multiplier on the indirect irradiance (the indirect-vs-direct ratio).\n"
+                              "Result: strength of bounce lighting. 1 = physically correct; >1 = exaggerate GI (common in AAA).\n"
+                              "This sets the RELATIVE level; use Exposure for absolute brightness.");
+        ImGui::SliderFloat("Sky GI strength", &s.giSkyIntensity, 0.0f, 4.0f, "%.2f");
+        ImGui::SetItemTooltip("Job: how strongly the sky (seen through windows on ray miss) lights the scene.\n"
+                              "Result: cool fill from the window/sky. Free knob — the procedural sky isn't calibrated.");
+        ImGui::SliderFloat("Multi-bounce gain", &s.giMultiBounce, 0.0f, 2.0f, "%.2f");
+        ImGui::SetItemTooltip("Job: feedback of the previous frame's indirect into each probe ray's hit (extra bounces).\n"
+                              "Result: the room fills up naturally (energy accumulates). 1 = physical, 0 = single bounce only, >1 = exaggerate.\n"
+                              "This is the AAA/RTXGI way to brighten GI without faking a flat ambient.");
         ImGui::SliderFloat("Hysteresis", &s.giHysteresis, 0.5f, 0.995f, "%.3f");
         ImGui::SetItemTooltip("Job: probe temporal blend (keeps this fraction of the previous frame).\n"
                               "Result: higher = stabler/less noise but slower to react to sun moves. Lower = responsive but noisier.");
@@ -247,6 +255,10 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
         ImGui::SliderFloat("Normal bias", &s.giNormalBias, 0.0f, 1.0f, "%.2f");
         ImGui::SetItemTooltip("Job: offsets the shading point along its normal before sampling probes.\n"
                               "Result: fixes self-occlusion (dark seams) at corners. Too high = light leaks.");
+        ImGui::Checkbox("Ray-traced visibility (no leak)", &s.giRayVisibility);
+        ImGui::SetItemTooltip("Job: how each probe's visibility to the pixel is tested.\n"
+                              "ON = exact short ray P->probe (any wall between = drop it). Zero leak, even through thin walls; costs a few rays/pixel.\n"
+                              "OFF = Chebyshev variance-depth (cheap, approximate, always leaks/over-darkens a bit). Use ON for correctness.");
         // Probe grid resolution: changing any axis rebuilds the atlases (recreateSwapchain).
         int probes[3] = {s.giProbesX, s.giProbesY, s.giProbesZ};
         if (ImGui::SliderInt3("Probes XYZ", probes, 2, 32)) {

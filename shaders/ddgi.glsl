@@ -116,24 +116,47 @@ vec3 ddgiSampleIrradiance(sampler2D irrAtlas, sampler2D depthAtlas,
         // Chebyshev visibility (depth atlas stores mean, mean^2 of ray distance).
         // Softened vs reference RTXGI (v^2 not v^3, larger variance floor, a small
         // depth bias) so it kills genuine leaks without zeroing valid contributions.
-        vec3  pToProbe = biasP - pp;
-        float dist = length(pToProbe) - 0.5 * length(p.gridSpacing.xyz); // depth bias ~ half a cell
-        vec2  mom  = texture(depthAtlas, ddgiAtlasUV(p, c, normalize(pToProbe), DDGI_DEPTH_RES)).rg;
-        float mean = mom.x;
-        float var  = max(mom.y - mean * mean, 2e-2);
-        float cheb = 1.0;
-        if (dist > mean) {
-            float d = dist - mean;
-            cheb = var / (var + d * d);
-            cheb = cheb * cheb; // softer falloff
+        // Pre-cull negligible probes (also skips their visibility ray).
+        float wpre = trilinear * wDir;
+        if (wpre < 1e-3) continue;
+
+        // Visibility: exact ray-traced (leak-free, needs TLAS) or Chebyshev (cheap).
+        float vis;
+#ifdef DDGI_HAS_TLAS
+        if (p.misc.w > 0.5) {
+            // Trace a short ray from the (biased) shading point to the probe. Any opaque
+            // hit in between = occluded -> this probe can't light P. No leak, ever.
+            vec3  toP = pp - biasP;
+            float dP  = length(toP);
+            rayQueryEXT vq;
+            rayQueryInitializeEXT(vq, topLevelAS,
+                gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu,
+                biasP, 1e-2, toP / max(dP, 1e-4), dP - 2e-2);
+            rayQueryProceedEXT(vq);
+            if (rayQueryGetIntersectionTypeEXT(vq, true) !=
+                gl_RayQueryCommittedIntersectionNoneEXT) continue; // occluded -> drop probe
+            vis = 1.0;
+        } else
+#endif
+        {
+            vec3  pToProbe = biasP - pp;
+            float dist = length(pToProbe);
+            vec2  mom  = texture(depthAtlas, ddgiAtlasUV(p, c, normalize(pToProbe), DDGI_DEPTH_RES)).rg;
+            float mean = mom.x;
+            float varr = max(mom.y - mean * mean, 2e-3);
+            float cheb = 1.0;
+            if (dist > mean) { float d = dist - mean; cheb = varr / (varr + d * d); cheb = cheb*cheb*cheb; }
+            if (cheb < 0.2) cheb *= cheb * cheb / 0.04; // crush residual leak
+            vis = cheb;
         }
 
-        float w = trilinear * wDir * cheb + 1e-4;
+        float w = wpre * vis;
         vec3  irr = texture(irrAtlas, ddgiAtlasUV(p, c, N, DDGI_IRR_RES)).rgb;
         sumIrr += irr * w;
         sumW   += w;
     }
-    return (sumIrr / max(sumW, 1e-5)) * p.params.y; // * intensity
+    // Fully enclosed/occluded point -> return 0 (dark) rather than an unweighted leak.
+    return sumW > 1e-4 ? sumIrr / sumW : vec3(0.0);
 }
 
 #endif

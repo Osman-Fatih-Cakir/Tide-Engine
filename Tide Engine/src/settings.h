@@ -66,6 +66,9 @@ struct Settings {
     float giHysteresis = 0.97f; // probe temporal blend (higher = stabler, slower to react)
     int   giRaysPerProbe = 64;  // rays traced per probe per frame (<= 128)
     float giNormalBias = 0.15f; // shading-point offset along N (self-occlusion fix, world units)
+    float giSkyIntensity = 1.0f; // sky/env contribution on ray miss (procedural sky uncalibrated)
+    float giMultiBounce  = 1.0f; // multi-bounce feedback gain (1 = physical, >1 exaggerates)
+    bool  giRayVisibility = true; // exact ray-traced probe visibility (leak-free) vs Chebyshev (cheap)
     int   giProbesX = 16, giProbesY = 8, giProbesZ = 16; // grid resolution (recreate)
     bool  giDebugProbes = false; // visualize probes as shaded spheres
 
