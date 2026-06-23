@@ -1,4 +1,4 @@
-// Shared froxel-volume helpers for the volumetric fog passes (Faz 7).
+// Shared froxel-volume helpers for the volumetric fog passes.
 // The froxel grid is camera-frustum aligned: x,y span the screen, z is an
 // exponential view-space depth slice (denser near the camera). Pass the grid
 // dims, the (unjittered) inverse view-projection, camera position and the near/

@@ -1,7 +1,7 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
-// Volumetric fog — apply pass (Faz 7). Per screen pixel: find its froxel z-slice
+// Volumetric fog — apply pass. Per screen pixel: find its froxel z-slice
 // from the scene's linear depth (packed in directLight.a by the resolve pass),
 // trilinearly sample the integrated volume and composite onto HDR:
 //   hdr = hdr * transmittance + inScatter.

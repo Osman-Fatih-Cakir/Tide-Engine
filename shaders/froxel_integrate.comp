@@ -1,7 +1,7 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
-// Volumetric fog — integrate pass (Faz 7). One thread per (x,y) column marches
+// Volumetric fog — integrate pass. One thread per (x,y) column marches
 // the scatter volume front-to-back along Z, accumulating in-scattered radiance
 // weighted by transmittance. Output per froxel: rgb = accumulated in-scatter,
 // a = transmittance from the camera to the front of that slice's far face.
