@@ -65,6 +65,10 @@ The engine is built entirely using **Visual Studio 2022**.
 
 *Note: All external libraries (GLFW, ImGui, VMA, Tracy, GLM, etc.) are included in the `Dependency/` directory. Make sure you have the [Vulkan SDK](https://vulkan.lunarg.com/) installed on your system.*
 
+## 🤝 Acknowledgments / Credits
+
+*   **Test Scene Asset:** The 3D environment used for testing and demonstrating the engine features is sourced from [Fab.com](https://www.fab.com/listings/4da78da6-44b3-4adf-8883-219fe17b44d4) (free-to-use).
+
 ## 📜 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
