@@ -63,7 +63,10 @@ The engine is built entirely using **Visual Studio 2022**.
 4. Build the solution (`Ctrl + Shift + B`).
 5. Run the project!
 
-*Note: All external libraries (GLFW, ImGui, VMA, Tracy, GLM, etc.) are included in the `Dependency/` directory. Make sure you have the [Vulkan SDK](https://vulkan.lunarg.com/) installed on your system.*
+*Note: External libraries like GLFW, ImGui, Tracy, and GLM are included in the `Dependency/` directory. However, you **must** have the [Vulkan SDK](https://vulkan.lunarg.com/) installed. During the LunarG Vulkan SDK installation, make sure to explicitly select and install the following components:*
+*   **Vulkan Memory Allocator (VMA)**
+*   **Shaderc**
+*   **Validation Layers**
 
 ## 🤝 Acknowledgments / Credits
 
