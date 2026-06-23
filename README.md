@@ -54,10 +54,11 @@ Tide Engine is currently **WIP**.
 
 The engine is built entirely using **Visual Studio 2022**. 
 
-1. Clone the repository:
+1. Clone the repository with its submodules:
    ```bash
-   git clone <repository_url>
+   git clone --recursive <repository_url>
    ```
+   *(If you already cloned it without `--recursive`, run `git submodule update --init --recursive` in the project folder).*
 2. Open the `Tide Engine.sln` solution file located in the root directory using Visual Studio 2022.
 3. Make sure the target architecture is set to **x64** (Debug or Release).
 4. Build the solution (`Ctrl + Shift + B`).

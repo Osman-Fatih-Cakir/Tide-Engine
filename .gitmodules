@@ -17,3 +17,6 @@
 [submodule "Dependency/stb"]
 	path = Dependency/stb
 	url = https://github.com/nothings/stb.git
+[submodule "Dependency/DLSS"]
+	path = Dependency/DLSS
+	url = https://github.com/NVIDIA/DLSS.git
