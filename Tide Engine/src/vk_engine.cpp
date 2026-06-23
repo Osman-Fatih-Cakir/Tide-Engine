@@ -93,13 +93,14 @@ void VulkanEngine::init() {
     recreateDlssFeature();
     if (m_scene.setLayout) {
         m_renderer.init(*this, m_swapchainFormat, m_depthFormat, m_scene.setLayout);
-        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent, m_settings.fogQuality);
+        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent, m_settings);
     }
     // Restore saved Settings + camera (if any), then rebuild for the loaded values.
     bool restored = loadState();
     m_lastDlssEnabled = m_settings.dlssEnabled;
     m_lastDlssQuality = m_settings.dlssQuality;
     m_lastFogQuality  = m_settings.fogQuality;
+    m_lastGiProbes    = {m_settings.giProbesX, m_settings.giProbesY, m_settings.giProbesZ};
     if (restored) recreateSwapchain(); // re-derive render extent / targets / DLSS feature
     m_ui.init(*this, m_swapchainFormat, 2, (uint32_t)m_swapchainImages.size());
 }
@@ -500,7 +501,7 @@ void VulkanEngine::recreateSwapchain() {
     createSwapchain();
     recreateDlssFeature();
     if (m_scene.setLayout)
-        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent, m_settings.fogQuality);
+        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent, m_settings);
 }
 
 VkExtent2D VulkanEngine::computeRenderExtent() {
@@ -773,6 +774,14 @@ void VulkanEngine::drawFrame(float dt) {
     // Fog grid preset change -> rebuild the froxel volumes at the new dimensions.
     if (m_settings.fogQuality != m_lastFogQuality) {
         m_lastFogQuality = m_settings.fogQuality;
+        recreateSwapchain();
+        return;
+    }
+    // DDGI probe grid change -> rebuild the irradiance/depth atlases + ray buffer.
+    if (m_settings.giProbesX != m_lastGiProbes.x ||
+        m_settings.giProbesY != m_lastGiProbes.y ||
+        m_settings.giProbesZ != m_lastGiProbes.z) {
+        m_lastGiProbes = {m_settings.giProbesX, m_settings.giProbesY, m_settings.giProbesZ};
         recreateSwapchain();
         return;
     }

@@ -1,0 +1,69 @@
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : require
+
+// DDGI probe update: gather this frame's ray results (ddgi_trace.comp) into the
+// octahedral irradiance + depth atlases, blended with the previous frame
+// (temporal hysteresis). Run twice (push.mode): 0 = irradiance (8x8 tiles),
+// 1 = depth/moments (16x16 tiles). One invocation per atlas texel.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "ddgi.glsl"
+
+layout(std140, set = 0, binding = 0) uniform DdgiUBO { DdgiParams ddgi; };
+layout(std430, set = 0, binding = 1) readonly buffer RayRadiance { vec4 rayResult[]; };
+layout(rgba16f, set = 0, binding = 2) uniform image2D irrAtlas;
+layout(rg16f,   set = 0, binding = 3) uniform image2D depthAtlas;
+
+layout(push_constant) uniform Push { int mode; } pc;
+
+const float DEPTH_SHARPNESS = 50.0;
+
+void main() {
+    int res = (pc.mode == 0) ? DDGI_IRR_RES : DDGI_DEPTH_RES;
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+
+    ivec2 tile  = texel / res;
+    ivec2 local = texel - tile * res;
+    // tile (tx,ty) -> probe (x,y,z): tx=x, ty = y + Ny*z.
+    int nx = ddgi.gridCounts.x, ny = ddgi.gridCounts.y, nz = ddgi.gridCounts.z;
+    if (tile.x >= nx || tile.y >= ny * nz) return;
+    ivec3 c = ivec3(tile.x, tile.y % ny, tile.y / ny);
+    if (c.z >= nz) return;
+    int probe = ddgiProbeIndex(ddgi, c);
+
+    vec3 texelDir = octDecode((vec2(local) + 0.5) / float(res));
+    int rays = ddgi.gridCounts.w;
+
+    float sumW = 0.0;
+    vec3  accumColor = vec3(0.0);
+    vec2  accumDepth = vec2(0.0); // mean, mean^2
+    for (int r = 0; r < rays; r++) {
+        vec3 rd = ddgiRayDir(ddgi, r);
+        float d = dot(texelDir, rd);
+        if (d <= 0.0) continue;
+        vec4 res4 = rayResult[probe * DDGI_MAX_RAYS + r];
+        if (pc.mode == 0) {
+            float w = d;
+            accumColor += res4.rgb * w;
+            sumW += w;
+        } else {
+            float w = pow(d, DEPTH_SHARPNESS);
+            float dist = min(res4.a, ddgi.shadowCfg.w);
+            accumDepth += vec2(dist, dist * dist) * w;
+            sumW += w;
+        }
+    }
+
+    float hys = ddgi.params.x;
+    if (pc.mode == 0) {
+        vec3 result = (sumW > 0.0) ? accumColor / sumW : vec3(0.0);
+        vec3 prev = imageLoad(irrAtlas, texel).rgb;
+        imageStore(irrAtlas, texel, vec4(mix(result, prev, hys), 1.0));
+    } else {
+        vec2 result = (sumW > 0.0) ? accumDepth / sumW : vec2(ddgi.shadowCfg.w);
+        vec2 prev = imageLoad(depthAtlas, texel).rg;
+        imageStore(depthAtlas, texel, vec4(mix(result, prev, hys), 0.0, 0.0));
+    }
+}

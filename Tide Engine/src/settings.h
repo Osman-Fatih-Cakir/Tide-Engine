@@ -59,6 +59,16 @@ struct Settings {
     bool  fogDepthCull    = true;  // kill froxels not fully in front of the surface (no leak)
     int   fogBlurRadius   = 1;     // deterministic volume blur radius (0=off,1=3³,2=5³,3=7³)
 
+    // Realtime GI — DDGI (Faz 8). World-space probe grid + octahedral irradiance/depth
+    // atlas, sampled in resolve.comp to replace the flat ambient term.
+    bool  giEnabled    = false; // default off so giIntensity-0 path is a clean regression
+    float giIntensity  = 1.0f;  // indirect irradiance multiplier (0 = old flat ambient)
+    float giHysteresis = 0.97f; // probe temporal blend (higher = stabler, slower to react)
+    int   giRaysPerProbe = 64;  // rays traced per probe per frame (<= 128)
+    float giNormalBias = 0.15f; // shading-point offset along N (self-occlusion fix, world units)
+    int   giProbesX = 16, giProbesY = 8, giProbesZ = 16; // grid resolution (recreate)
+    bool  giDebugProbes = false; // visualize probes as shaded spheres
+
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 
     // Frame-time graph.

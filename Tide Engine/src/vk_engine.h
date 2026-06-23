@@ -126,6 +126,7 @@ private:
     bool m_lastDlssEnabled = true;
     int  m_lastDlssQuality = -1;
     int  m_lastFogQuality  = 1;  // tracks fog grid preset changes from UI
+    glm::ivec3 m_lastGiProbes = {-1, -1, -1}; // tracks DDGI probe grid changes from UI
     float m_sunAnimTime    = 0.0f; // sun-sweep phase accumulator
 
     // --- profiling ---

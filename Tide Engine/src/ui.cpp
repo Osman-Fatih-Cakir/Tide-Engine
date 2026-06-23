@@ -229,6 +229,33 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
                               "Higher = fog reaches farther but coarser per-slice (more blocky far away). Lower = denser slices up close.");
     }
 
+    ImGui::SeparatorText("Global Illumination (DDGI)");
+    ImGui::Checkbox("GI enabled", &s.giEnabled);
+    ImGui::SetItemTooltip("Job: real diffuse indirect light (DDGI probe grid) replaces the flat ambient.\n"
+                          "Result: sunlight bounces off floor/walls and lights shadowed areas with color.\n"
+                          "Off = flat constant ambient (exactly as before).");
+    if (s.giEnabled) {
+        ImGui::SliderFloat("GI intensity", &s.giIntensity, 0.0f, 8.0f, "%.2f");
+        ImGui::SetItemTooltip("Job: multiplies the sampled indirect irradiance.\n"
+                              "Result: strength of the bounce lighting. 0 = black ambient, 1 = physical.");
+        ImGui::SliderFloat("Hysteresis", &s.giHysteresis, 0.5f, 0.995f, "%.3f");
+        ImGui::SetItemTooltip("Job: probe temporal blend (keeps this fraction of the previous frame).\n"
+                              "Result: higher = stabler/less noise but slower to react to sun moves. Lower = responsive but noisier.");
+        ImGui::SliderInt("Rays / probe", &s.giRaysPerProbe, 8, 128);
+        ImGui::SetItemTooltip("Job: rays traced per probe each frame (hemisphere sampling).\n"
+                              "Result: more = less noise/faster convergence, more GPU cost. 64 is a good default.");
+        ImGui::SliderFloat("Normal bias", &s.giNormalBias, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Job: offsets the shading point along its normal before sampling probes.\n"
+                              "Result: fixes self-occlusion (dark seams) at corners. Too high = light leaks.");
+        // Probe grid resolution: changing any axis rebuilds the atlases (recreateSwapchain).
+        int probes[3] = {s.giProbesX, s.giProbesY, s.giProbesZ};
+        if (ImGui::SliderInt3("Probes XYZ", probes, 2, 32)) {
+            s.giProbesX = probes[0]; s.giProbesY = probes[1]; s.giProbesZ = probes[2];
+        }
+        ImGui::SetItemTooltip("Job: world-space probe grid resolution (rebuilds the atlases).\n"
+                              "Result: more probes = finer indirect detail + cost. The grid wraps the scene bounds.");
+    }
+
     ImGui::SeparatorText("Tonemap");
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 5.0f);
     ImGui::PopItemWidth();

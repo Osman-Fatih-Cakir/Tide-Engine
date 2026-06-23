@@ -1,6 +1,7 @@
 #pragma once
 #include "pch.h"
 #include "gpu_image.h"
+#include "gpu_buffer.h"
 #include "settings.h"
 
 class VulkanEngine;
@@ -21,7 +22,7 @@ public:
     // (Re)create the targets. renderExtent sizes vis/hdr/shadow/motion/depth;
     // displayExtent sizes the DLSS output. Call on init and every resize/mode change.
     void createTargets(VulkanEngine& eng, VkExtent2D renderExtent, VkExtent2D displayExtent,
-                       int fogQuality);
+                       const Settings& settings);
     void destroyTargets(VulkanEngine& eng);
 
     void destroy(VulkanEngine& eng);
@@ -136,4 +137,27 @@ private:
     VkDescriptorSet       m_tonemapSetDlss   = VK_NULL_HANDLE; // samples m_dlssOutput
 
     VkDescriptorPool m_pool = VK_NULL_HANDLE;
+
+    // ======================= DDGI (Faz 8) =======================
+    // World-space probe grid -> octahedral irradiance + depth atlases (one big 2D
+    // image each, tiled per probe), sampled in resolve to replace flat ambient.
+    Image  m_ddgiIrradiance{};   // RGBA16F oct irradiance atlas (kept in GENERAL)
+    Image  m_ddgiDepth{};        // RG16F oct depth/moments atlas (kept in GENERAL)
+    Buffer m_ddgiRays{};         // vec4[probe*128] ray radiance + hit distance (SSBO)
+    Buffer m_ddgiUbo{};          // host-visible DdgiParams UBO (shared by all 3 passes)
+    glm::ivec3 m_ddgiCounts = {16, 8, 16};
+    bool   m_ddgiHaveHistory = false;
+
+    VkPipeline            m_ddgiTracePipeline  = VK_NULL_HANDLE;
+    VkPipelineLayout      m_ddgiTraceLayout    = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_ddgiTraceSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_ddgiTraceSet       = VK_NULL_HANDLE;
+    VkPipeline            m_ddgiUpdatePipeline  = VK_NULL_HANDLE;
+    VkPipelineLayout      m_ddgiUpdateLayout    = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_ddgiUpdateSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_ddgiUpdateSet       = VK_NULL_HANDLE;
+    // Sampling set (set 2 of the resolve pipeline): UBO + irradiance + depth.
+    VkDescriptorSetLayout m_ddgiSampleSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_ddgiSampleSet       = VK_NULL_HANDLE;
+    VkDescriptorPool      m_ddgiPool = VK_NULL_HANDLE;
 };

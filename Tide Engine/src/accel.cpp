@@ -150,7 +150,7 @@ void buildSceneAccel(VulkanEngine& eng, Scene& scene) {
             for (int r = 0; r < 3; r++)
                 for (int c = 0; c < 4; c++)
                     inst.transform.matrix[r][c] = m[c][r]; // -> row-major 3x4
-            inst.instanceCustomIndex = 0;          // unused (no hit lookup)
+            inst.instanceCustomIndex = opaque[k];  // scene instance index (DDGI hit lookup)
             inst.mask = 0xFFu;
             inst.instanceShaderBindingTableRecordOffset = 0;
             inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;

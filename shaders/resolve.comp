@@ -5,6 +5,8 @@
 #extension GL_EXT_ray_query : require
 
 #include "pbr.glsl"
+#include "ddgi.glsl"
+#include "sky.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -74,30 +76,11 @@ layout(push_constant) uniform Push {
 
 #include "rtshadow.glsl"
 
-// Procedural sky (no RT): horizon->zenith gradient + an HDR sun disk in the sun
-// direction, so the window shows the background and the sun's actual position.
-vec3 skyColor(vec3 dir, vec3 L) {
-    float h  = clamp(dir.y, -1.0, 1.0);
-    float up = max(h, 0.0);
-    vec3 zenith = vec3(0.10, 0.28, 0.65);
-    vec3 ground = vec3(0.16, 0.30, 0.15); // natural green
-    // Direct sky->ground transition with a tiny smooth across the horizon.
-    vec3 col = mix(ground, zenith, smoothstep(-0.01, 0.01, h));
-    // Warm band along the horizon toward the sun's azimuth (sunrise/sunset feel).
-    float azAlign = max(dot(normalize(vec3(dir.x, 0.0, dir.z)),
-                            normalize(vec3(L.x, 0.0, L.z))), 0.0);
-    col += vec3(0.45, 0.22, 0.08) * pow(azAlign, 4.0) * pow(1.0 - up, 6.0);
-
-    // Sun: bright HDR core + halo (warm), positioned at L.
-    float cosA = dot(dir, L);
-    float ang  = acos(clamp(cosA, -1.0, 1.0));
-    float disk = 1.0 - smoothstep(0.009, 0.013, ang);     // ~0.6 deg core, soft edge
-    float halo = exp(-ang * ang / (2.0 * 0.05 * 0.05)) * 0.6 // tight glow
-               + pow(max(cosA, 0.0), 8.0) * 0.12;            // broad glow
-    col += vec3(1.0, 0.96, 0.88) * disk * 40.0;
-    col += vec3(1.0, 0.85, 0.60) * halo;
-    return col;
-}
+// DDGI sample set (set 2): probe params + irradiance/depth atlases. Replaces the
+// flat ambient term with real indirect irradiance when misc.x (use GI) is set.
+layout(std140, set = 2, binding = 0) uniform DdgiUBO { DdgiParams ddgi; };
+layout(set = 2, binding = 1) uniform sampler2D ddgiIrradiance;
+layout(set = 2, binding = 2) uniform sampler2D ddgiDepth;
 
 float cross2(vec2 a, vec2 b) { return a.x * b.y - a.y * b.x; }
 
@@ -278,7 +261,12 @@ void main() {
     // Direct sun term WITHOUT shadow (composite multiplies the denoised shadow back in)
     // and ambient (shadow-independent) straight into HDR.
     vec3 direct  = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb);
+    // Ambient: flat constant, or DDGI indirect irradiance when GI is enabled.
     vec3 ambient = pc.sunDir.w * albedo * ao; // occluded by baked AO
+    if (ddgi.misc.x > 0.5) {
+        vec3 indirect = ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, worldPos, N);
+        ambient = indirect * albedo * ao;
+    }
     imageStore(directLightImage, pix, vec4(direct, curW)); // .a = linear depth for à-trous edge-stop
     imageStore(shadowOutImage,   pix, vec4(shadow));
     imageStore(hdrImage,         pix, vec4(ambient, 1.0));

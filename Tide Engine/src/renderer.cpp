@@ -5,6 +5,7 @@
 #include "mesh.h"
 #include "dlss.h"
 #include <cstddef>   // offsetof
+#include <cstring>   // memcpy
 #include <algorithm> // sort
 #include <cmath>     // fabs
 #include <vector>
@@ -91,6 +92,23 @@ static float halton(uint32_t i, uint32_t base) {
     while (i > 0) { f /= (float)base; r += f * (float)(i % base); i /= base; }
     return r;
 }
+
+// DDGI (Faz 8). Octahedral tile resolutions + per-probe ray budget (SSBO stride).
+// Must match shaders/ddgi.glsl.
+static constexpr uint32_t DDGI_MAX_RAYS  = 128;
+static constexpr uint32_t DDGI_IRR_RES   = 8;
+static constexpr uint32_t DDGI_DEPTH_RES = 16;
+struct DdgiParams {                 // matches the DdgiParams UBO in ddgi.glsl (std140)
+    glm::vec4  gridOrigin;
+    glm::vec4  gridSpacing;
+    glm::ivec4 gridCounts;          // xyz = Nx,Ny,Nz ; w = raysPerProbe
+    glm::vec4  sunDir;              // xyz dir, w = sky/ambient intensity
+    glm::vec4  sunColor;
+    glm::vec4  params;              // x=hysteresis y=intensity z=normalBias w=frame
+    glm::vec4  shadowCfg;           // x=coneRad y=samples z=shadowsOn w=maxRayDist
+    glm::vec4  misc;               // x = use GI in resolve (0/1)
+};
+struct DdgiUpdatePush { int mode; }; // 0 = irradiance atlas, 1 = depth atlas
 
 // ---------------------------------------------------------------------------
 // Small helpers.
@@ -288,6 +306,45 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         lci.bindingCount = 1;
         lci.pBindings = &b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_tonemapSetLayout));
+    }
+
+    // ---- DDGI set layouts (created early; resolve set2 references the sample one) ----
+    {
+        // Trace set: b0 UBO, b1 ray-result SSBO (write).
+        VkDescriptorSetLayoutBinding b[2]{};
+        b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 2; lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_ddgiTraceSetLayout));
+    }
+    {
+        // Update set: b0 UBO, b1 ray SSBO (read), b2 irradiance (storage), b3 depth (storage).
+        VkDescriptorSetLayoutBinding b[4]{};
+        b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[3].binding = 3; b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        for (int i = 0; i < 4; i++) { b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 4; lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_ddgiUpdateSetLayout));
+    }
+    {
+        // Sample set (resolve set2): b0 UBO, b1 irradiance (sampler), b2 depth (sampler).
+        VkDescriptorSetLayoutBinding b[3]{};
+        b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        for (int i = 0; i < 3; i++) { b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 3; lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_ddgiSampleSetLayout));
     }
 
     // ---- Descriptor pool + sets (views written in createTargets) ----
@@ -537,10 +594,12 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.size = sizeof(ResolvePush);
-        VkDescriptorSetLayout sets[2] = {sceneSetLayout, m_resolveSetLayout};
+        // set2 = DDGI sampling (UBO + irradiance + depth). Built just below; the
+        // layout must exist before this pipeline layout — see the DDGI block.
+        VkDescriptorSetLayout sets[3] = {sceneSetLayout, m_resolveSetLayout, m_ddgiSampleSetLayout};
         VkPipelineLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        lci.setLayoutCount = 2;
+        lci.setLayoutCount = 3;
         lci.pSetLayouts = sets;
         lci.pushConstantRangeCount = 1;
         lci.pPushConstantRanges = &pc;
@@ -823,15 +882,80 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_fogApplyPipeline));
         vkDestroyShaderModule(device, comp, nullptr);
     }
+
+    // ======================= DDGI (Faz 8) =======================
+    // Shared params UBO (host-visible, persistently mapped; updated each frame).
+    m_ddgiUbo = createBuffer(eng.allocator(), sizeof(DdgiParams),
+                             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                             VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    // Pool + one set each (atlas/buffer views written in createTargets).
+    {
+        VkDescriptorPoolSize sizes[4]{};
+        sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         sizes[0].descriptorCount = 3;
+        sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;        sizes[1].descriptorCount = 2;
+        sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;         sizes[2].descriptorCount = 2;
+        sizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[3].descriptorCount = 2;
+        VkDescriptorPoolCreateInfo pci{};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets = 3; pci.poolSizeCount = 4; pci.pPoolSizes = sizes;
+        VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_ddgiPool));
+
+        VkDescriptorSetAllocateInfo dai{};
+        dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dai.descriptorPool = m_ddgiPool; dai.descriptorSetCount = 1;
+        dai.pSetLayouts = &m_ddgiTraceSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_ddgiTraceSet));
+        dai.pSetLayouts = &m_ddgiUpdateSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_ddgiUpdateSet));
+        dai.pSetLayouts = &m_ddgiSampleSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_ddgiSampleSet));
+    }
+    // Trace pipeline: set0 scene (TLAS + bindless), set1 trace.
+    {
+        VkShaderModule comp = loadShaderModule(device, "shaders/ddgi_trace.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+        VkDescriptorSetLayout sets[2] = {sceneSetLayout, m_ddgiTraceSetLayout};
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 2; lci.pSetLayouts = sets;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_ddgiTraceLayout));
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = comp; cpi.stage.pName = "main";
+        cpi.layout = m_ddgiTraceLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_ddgiTracePipeline));
+        vkDestroyShaderModule(device, comp, nullptr);
+    }
+    // Update pipeline: set0 update, push = mode.
+    {
+        VkShaderModule comp = loadShaderModule(device, "shaders/ddgi_update.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; pc.size = sizeof(DdgiUpdatePush);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 1; lci.pSetLayouts = &m_ddgiUpdateSetLayout;
+        lci.pushConstantRangeCount = 1; lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_ddgiUpdateLayout));
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = comp; cpi.stage.pName = "main";
+        cpi.layout = m_ddgiUpdateLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_ddgiUpdatePipeline));
+        vkDestroyShaderModule(device, comp, nullptr);
+    }
 }
 
 void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D displayExtent,
-                             int fogQuality) {
+                             const Settings& settings) {
     destroyTargets(eng);
     m_extent = extent;
     m_displayExtent = displayExtent;
     m_dlssReset = true; // history is invalid after (re)creating resources
-    m_froxelDim = fogGridDim(fogQuality);
+    m_froxelDim = fogGridDim(settings.fogQuality);
     m_haveFogHistory = false;
     m_fogHistIndex = 0;
 
@@ -885,6 +1009,25 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     m_froxelIntegrated = makeImage3D(eng, VK_FORMAT_R16G16B16A16_SFLOAT, froxelUsage,
                                      m_froxelDim, "Froxel Integrated");
 
+    // ----- DDGI atlases + ray SSBO (sized to the active probe grid) -----
+    m_ddgiCounts = glm::ivec3(std::max(1, settings.giProbesX),
+                              std::max(1, settings.giProbesY),
+                              std::max(1, settings.giProbesZ));
+    m_ddgiHaveHistory = false;
+    int Nx = m_ddgiCounts.x, Ny = m_ddgiCounts.y, Nz = m_ddgiCounts.z;
+    VkExtent2D irrExt   = {(uint32_t)(Nx * DDGI_IRR_RES),   (uint32_t)(Ny * Nz * DDGI_IRR_RES)};
+    VkExtent2D depthExt = {(uint32_t)(Nx * DDGI_DEPTH_RES), (uint32_t)(Ny * Nz * DDGI_DEPTH_RES)};
+    VkImageUsageFlags atlasUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT; // TRANSFER_DST: cleared below
+    m_ddgiIrradiance = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT, atlasUsage,
+                                 irrExt, VK_IMAGE_ASPECT_COLOR_BIT, "DDGI Irradiance");
+    m_ddgiDepth = makeImage(eng, VK_FORMAT_R16G16_SFLOAT, atlasUsage,
+                            depthExt, VK_IMAGE_ASPECT_COLOR_BIT, "DDGI Depth");
+    VkDeviceSize rayBytes = (VkDeviceSize)Nx * Ny * Nz * DDGI_MAX_RAYS * sizeof(glm::vec4);
+    m_ddgiRays = createBuffer(eng.allocator(), rayBytes,
+                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
+                              VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
+
     // Initialize history images + shadowOut2 + froxel volumes to GENERAL so the per-frame
     // GENERAL->GENERAL barriers are always valid. (shadowHist read needs it; shadowOut2 is
     // only ever touched by à-trous, which assumes GENERAL — resolve never transitions it.)
@@ -895,6 +1038,20 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        // DDGI atlases: clear to 0 (so first-frame temporal mix reads no NaNs), then GENERAL.
+        VkClearColorValue zero{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        for (VkImage g : {m_ddgiIrradiance.image, m_ddgiDepth.image}) {
+            imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vkCmdClearColorImage(cmd, g, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
+            imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+        }
     });
     m_haveHistory = false;
     m_histIndex = 0;
@@ -1003,6 +1160,35 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     add(m_fogApplySet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &hdrStore);
     add(m_fogApplySet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
 
+    // ----- DDGI descriptor writes -----
+    VkDescriptorBufferInfo uboInfo{m_ddgiUbo.buffer, 0, sizeof(DdgiParams)};
+    VkDescriptorBufferInfo rayInfo{m_ddgiRays.buffer, 0, VK_WHOLE_SIZE};
+    auto addBuf = [&](VkDescriptorSet set, uint32_t bind, VkDescriptorType t,
+                      const VkDescriptorBufferInfo* info) {
+        VkWriteDescriptorSet x{};
+        x.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        x.dstSet = set; x.dstBinding = bind; x.descriptorType = t;
+        x.descriptorCount = 1; x.pBufferInfo = info;
+        w.push_back(x);
+    };
+    VkDescriptorImageInfo ddgiIrrStore{}, ddgiDepthStore{}, ddgiIrrSamp{}, ddgiDepthSamp{};
+    ddgiIrrStore.imageView   = m_ddgiIrradiance.view; ddgiIrrStore.imageLayout   = VK_IMAGE_LAYOUT_GENERAL;
+    ddgiDepthStore.imageView = m_ddgiDepth.view;      ddgiDepthStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    ddgiIrrSamp.sampler = m_hdrSampler;   ddgiIrrSamp.imageView = m_ddgiIrradiance.view; ddgiIrrSamp.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    ddgiDepthSamp.sampler = m_hdrSampler; ddgiDepthSamp.imageView = m_ddgiDepth.view;    ddgiDepthSamp.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // Trace: UBO + ray SSBO (write).
+    addBuf(m_ddgiTraceSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &uboInfo);
+    addBuf(m_ddgiTraceSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &rayInfo);
+    // Update: UBO + ray SSBO (read) + irradiance/depth (storage).
+    addBuf(m_ddgiUpdateSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &uboInfo);
+    addBuf(m_ddgiUpdateSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &rayInfo);
+    add(m_ddgiUpdateSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ddgiIrrStore);
+    add(m_ddgiUpdateSet, 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ddgiDepthStore);
+    // Sample (resolve set2): UBO + irradiance/depth (sampled).
+    addBuf(m_ddgiSampleSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &uboInfo);
+    add(m_ddgiSampleSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ddgiIrrSamp);
+    add(m_ddgiSampleSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ddgiDepthSamp);
+
     vkUpdateDescriptorSets(eng.device(), (uint32_t)w.size(), w.data(), 0, nullptr);
 }
 
@@ -1022,6 +1208,9 @@ void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_froxelScatter[0]);
     destroyImage(eng.allocator(), eng.device(), m_froxelScatter[1]);
     destroyImage(eng.allocator(), eng.device(), m_froxelIntegrated);
+    destroyImage(eng.allocator(), eng.device(), m_ddgiIrradiance);
+    destroyImage(eng.allocator(), eng.device(), m_ddgiDepth);
+    destroyBuffer(eng.allocator(), m_ddgiRays);
 }
 
 void Renderer::destroy(VulkanEngine& eng) {
@@ -1058,6 +1247,16 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_fogIntegrateSetLayout) vkDestroyDescriptorSetLayout(device, m_fogIntegrateSetLayout, nullptr);
     if (m_fogApplySetLayout) vkDestroyDescriptorSetLayout(device, m_fogApplySetLayout, nullptr);
     if (m_fogPool) vkDestroyDescriptorPool(device, m_fogPool, nullptr);
+    // DDGI.
+    destroyBuffer(eng.allocator(), m_ddgiUbo);
+    if (m_ddgiTracePipeline) vkDestroyPipeline(device, m_ddgiTracePipeline, nullptr);
+    if (m_ddgiTraceLayout) vkDestroyPipelineLayout(device, m_ddgiTraceLayout, nullptr);
+    if (m_ddgiUpdatePipeline) vkDestroyPipeline(device, m_ddgiUpdatePipeline, nullptr);
+    if (m_ddgiUpdateLayout) vkDestroyPipelineLayout(device, m_ddgiUpdateLayout, nullptr);
+    if (m_ddgiTraceSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiTraceSetLayout, nullptr);
+    if (m_ddgiUpdateSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiUpdateSetLayout, nullptr);
+    if (m_ddgiSampleSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiSampleSetLayout, nullptr);
+    if (m_ddgiPool) vkDestroyDescriptorPool(device, m_ddgiPool, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,6 +1389,92 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         m_eng->cmdEndLabel(cmd);
     }
 
+    // ===================== Pass A2: DDGI (probe trace + update) =====================
+    // World-space probe grid -> octahedral irradiance/depth atlases, read by resolve
+    // to replace flat ambient. The UBO is filled every frame (misc.x gates the
+    // resolve sampling) so the GI-off path stays a clean regression.
+    bool giOn = settings.giEnabled && !settings.debugMotionVecs;
+    {
+        glm::vec3 bmin = scene.boundsMin, bmax = scene.boundsMax;
+        glm::vec3 ext = bmax - bmin;
+        glm::vec3 pad = ext * 0.05f + glm::vec3(0.01f);
+        glm::vec3 omin = bmin - pad, omax = bmax + pad;
+        glm::vec3 spacing(1.0f);
+        for (int i = 0; i < 3; i++)
+            spacing[i] = (m_ddgiCounts[i] > 1) ? (omax[i] - omin[i]) / float(m_ddgiCounts[i] - 1)
+                                               : (omax[i] - omin[i]);
+        int rays = std::max(1, std::min(settings.giRaysPerProbe, (int)DDGI_MAX_RAYS));
+        float maxDist = glm::length(ext) * 1.5f + 1.0f;
+
+        DdgiParams dp{};
+        dp.gridOrigin  = glm::vec4(omin, 0.0f);
+        dp.gridSpacing = glm::vec4(spacing, 0.0f);
+        dp.gridCounts  = glm::ivec4(m_ddgiCounts, rays);
+        dp.sunDir      = glm::vec4(sun, settings.ambient); // w = sky intensity on miss
+        dp.sunColor    = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+        dp.params      = glm::vec4(m_ddgiHaveHistory ? settings.giHysteresis : 0.0f,
+                                   settings.giIntensity, settings.giNormalBias,
+                                   (float)(frame & 0xFFFF));
+        dp.shadowCfg   = glm::vec4(0.0f, 0.0f, settings.shadowsEnabled ? 1.0f : 0.0f, maxDist);
+        dp.misc        = glm::vec4(giOn ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        memcpy(m_ddgiUbo.mapped, &dp, sizeof(dp));
+
+        if (giOn) {
+            TracyVkZone(tracy, cmd, "DDGI");
+            m_eng->cmdBeginLabel(cmd, "DDGI Pass (trace + update)");
+            uint32_t probeCount = (uint32_t)(m_ddgiCounts.x * m_ddgiCounts.y * m_ddgiCounts.z);
+
+            auto memBarrier = [&](VkAccessFlags2 src, VkAccessFlags2 dst) {
+                VkMemoryBarrier2 mb{};
+                mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+                mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT; mb.srcAccessMask = src;
+                mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT; mb.dstAccessMask = dst;
+                VkDependencyInfo dep{}; dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &mb;
+                vkCmdPipelineBarrier2(cmd, &dep);
+            };
+
+            // Prev frame's update read the ray buffer; this frame's trace overwrites it.
+            memBarrier(VK_ACCESS_2_SHADER_STORAGE_READ_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+            // ---- Trace: one workgroup per probe (128 rays/group) ----
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiTracePipeline);
+            VkDescriptorSet tset[2] = {scene.descriptorSet, m_ddgiTraceSet};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiTraceLayout,
+                                    0, 2, tset, 0, nullptr);
+            vkCmdDispatch(cmd, probeCount, 1, 1);
+
+            // Trace writes -> update reads the ray buffer.
+            memBarrier(VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+
+            // ---- Update: gather into irradiance (mode 0) then depth (mode 1) atlases ----
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiUpdatePipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiUpdateLayout,
+                                    0, 1, &m_ddgiUpdateSet, 0, nullptr);
+            uint32_t irrW = (uint32_t)(m_ddgiCounts.x * DDGI_IRR_RES);
+            uint32_t irrH = (uint32_t)(m_ddgiCounts.y * m_ddgiCounts.z * DDGI_IRR_RES);
+            uint32_t depW = (uint32_t)(m_ddgiCounts.x * DDGI_DEPTH_RES);
+            uint32_t depH = (uint32_t)(m_ddgiCounts.y * m_ddgiCounts.z * DDGI_DEPTH_RES);
+            DdgiUpdatePush up{0};
+            vkCmdPushConstants(cmd, m_ddgiUpdateLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(up), &up);
+            vkCmdDispatch(cmd, (irrW + 7) / 8, (irrH + 7) / 8, 1);
+            up.mode = 1;
+            vkCmdPushConstants(cmd, m_ddgiUpdateLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(up), &up);
+            vkCmdDispatch(cmd, (depW + 7) / 8, (depH + 7) / 8, 1);
+
+            // Atlases written (storage) -> sampled by resolve.
+            for (VkImage g : {m_ddgiIrradiance.image, m_ddgiDepth.image})
+                imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+            m_eng->cmdEndLabel(cmd);
+            m_ddgiHaveHistory = true;
+        }
+    }
+
     // ===================== Pass B: Resolve (compute -> HDR) =====================
     {
         TracyVkZone(tracy, cmd, "Resolve");
@@ -1224,9 +1509,9 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_resolvePipeline);
-        VkDescriptorSet sets[2] = {scene.descriptorSet, m_resolveSet[cur]};
+        VkDescriptorSet sets[3] = {scene.descriptorSet, m_resolveSet[cur], m_ddgiSampleSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_resolveLayout,
-                                0, 2, sets, 0, nullptr);
+                                0, 3, sets, 0, nullptr);
 
         ResolvePush push{};
         push.viewProj = jitteredVP;          // reconstruction must match the jittered raster

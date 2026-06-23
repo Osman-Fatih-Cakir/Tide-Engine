@@ -1,0 +1,105 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+
+// DDGI ray tracing: one workgroup per probe, one invocation per ray. Each ray is
+// cast into the TLAS; on miss it samples the sky, on hit it reconstructs the
+// surface (bindless) and shades direct sun (+ RT shadow). Results (radiance +
+// hit distance) go to an intermediate SSBO consumed by ddgi_update.comp.
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in; // = DDGI_MAX_RAYS
+
+// ----- Scene set (set 0), identical layout to resolve.comp -----
+struct GpuMaterial {
+    vec4  baseColorFactor;
+    int   baseColorTexture; int normalTexture; int metalRoughTexture; int occlusionTexture;
+    float metallicFactor; float roughnessFactor; float occlusionStrength; float alphaCutoff;
+    int   alphaMode; int pad0; int pad1; int pad2;
+};
+struct Vertex { vec3 position; vec3 normal; vec2 uv; vec4 tangent; };
+struct GpuInstance { mat4 transform; uint geometryID; uint pad0; uint pad1; uint pad2; };
+struct GpuGeometry { uint firstIndex; uint vertexOffset; uint materialIndex; uint pad; };
+
+layout(std430, set = 0, binding = 0) readonly buffer Materials { GpuMaterial materials[]; };
+layout(set = 0, binding = 1) uniform sampler2D textures[];
+layout(scalar, set = 0, binding = 2) readonly buffer Vertices { Vertex vertices[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Indices { uint indices[]; };
+layout(scalar, set = 0, binding = 4) readonly buffer Instances { GpuInstance instances[]; };
+layout(set = 0, binding = 5) uniform accelerationStructureEXT topLevelAS;
+layout(std430, set = 0, binding = 6) readonly buffer Geometries { GpuGeometry geometries[]; };
+
+#include "ddgi.glsl"
+#include "sky.glsl"
+#include "rtshadow.glsl"
+
+// ----- DDGI trace set (set 1) -----
+layout(std140, set = 1, binding = 0) uniform DdgiUBO { DdgiParams ddgi; };
+layout(std430, set = 1, binding = 1) writeonly buffer RayRadiance { vec4 rayResult[]; }; // rgb, a=dist
+
+void main() {
+    int probe = int(gl_WorkGroupID.x);
+    int ray   = int(gl_LocalInvocationID.x);
+    if (probe >= ddgiProbeCount(ddgi) || ray >= ddgi.gridCounts.w) return;
+
+    ivec3 pc = ddgiProbeCoord(ddgi, probe);
+    vec3 origin = ddgiProbePos(ddgi, pc);
+    vec3 dir = ddgiRayDir(ddgi, ray);
+    float maxDist = ddgi.shadowCfg.w;
+
+    // Closest hit (all geometry opaque -> proceed loop just commits the nearest).
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, topLevelAS, gl_RayFlagsOpaqueEXT, 0xFFu,
+                          origin, 1e-3, dir, maxDist);
+    while (rayQueryProceedEXT(rq)) {}
+
+    vec3 radiance;
+    float dist;
+    if (rayQueryGetIntersectionTypeEXT(rq, true) ==
+        gl_RayQueryCommittedIntersectionNoneEXT) {
+        // Miss -> sky radiance, "infinite" distance for the depth atlas.
+        radiance = skyColor(dir, normalize(ddgi.sunDir.xyz)) * ddgi.sunDir.w;
+        dist = maxDist;
+    } else {
+        uint instID = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+        uint primID = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+        vec2 bc = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+        float t = rayQueryGetIntersectionTEXT(rq, true);
+        vec3 w = vec3(1.0 - bc.x - bc.y, bc.x, bc.y);
+
+        GpuInstance inst = instances[instID];
+        GpuGeometry g = geometries[inst.geometryID];
+        mat4 model = inst.transform;
+        uint base = g.firstIndex + primID * 3u;
+        Vertex a0 = vertices[indices[base + 0u] + g.vertexOffset];
+        Vertex a1 = vertices[indices[base + 1u] + g.vertexOffset];
+        Vertex a2 = vertices[indices[base + 2u] + g.vertexOffset];
+
+        vec3 hitP = origin + dir * t;
+        mat3 nm = transpose(inverse(mat3(model)));
+        vec3 N = normalize(nm * (a0.normal * w.x + a1.normal * w.y + a2.normal * w.z));
+        if (dot(N, dir) > 0.0) N = -N; // face the incoming ray
+        vec2 uv = a0.uv * w.x + a1.uv * w.y + a2.uv * w.z;
+
+        GpuMaterial m = materials[g.materialIndex];
+        vec3 albedo = m.baseColorFactor.rgb;
+        if (m.baseColorTexture >= 0)
+            albedo *= textureLod(textures[nonuniformEXT(m.baseColorTexture)], uv, 0.0).rgb;
+
+        // Direct sun (Lambert) with a hard RT shadow.
+        vec3 L = normalize(ddgi.sunDir.xyz);
+        float ndl = max(dot(N, L), 0.0);
+        float vis = 0.0;
+        if (ndl > 0.0 && ddgi.shadowCfg.z > 0.5)
+            vis = rtOccluded(hitP + N * 1e-3, L) ? 0.0 : 1.0;
+        else if (ndl > 0.0)
+            vis = 1.0;
+        radiance = albedo / DDGI_PI * ddgi.sunColor.rgb * ndl * vis;
+        // Sky/ambient fill at the hit so fully shadowed surfaces still feed some
+        // indirect (cheap stand-in for higher bounces). Scaled by the Ambient slider.
+        radiance += albedo * ddgi.sunDir.w;
+        dist = t;
+    }
+    rayResult[probe * DDGI_MAX_RAYS + ray] = vec4(radiance, dist);
+}
