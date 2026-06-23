@@ -56,6 +56,8 @@ private:
     void destroyDepthResources();
     VkExtent2D computeRenderExtent();  // render res from DLSS mode (display res if off)
     void recreateDlssFeature();        // (re)create the DLSS feature for current sizes
+    void saveState();   // dump Settings + camera to tide_state.bin (on cleanup)
+    bool loadState();   // restore them on init; false if missing/unreadable -> defaults
     void initFrames();
     void initProfiler();
     void initImmediate();

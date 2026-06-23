@@ -1,5 +1,6 @@
 #include "vk_engine.h"
 #include "gltf_loader.h"
+#include <fstream>
 
 // ---------------------------------------------------------------------------
 // Config
@@ -94,8 +95,12 @@ void VulkanEngine::init() {
         m_renderer.init(*this, m_swapchainFormat, m_depthFormat, m_scene.setLayout);
         m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent, m_settings.fogQuality);
     }
+    // Restore saved Settings + camera (if any), then rebuild for the loaded values.
+    bool restored = loadState();
     m_lastDlssEnabled = m_settings.dlssEnabled;
     m_lastDlssQuality = m_settings.dlssQuality;
+    m_lastFogQuality  = m_settings.fogQuality;
+    if (restored) recreateSwapchain(); // re-derive render extent / targets / DLSS feature
     m_ui.init(*this, m_swapchainFormat, 2, (uint32_t)m_swapchainImages.size());
 }
 
@@ -606,8 +611,8 @@ void VulkanEngine::immediateSubmit(const std::function<void(VkCommandBuffer)>& f
 void VulkanEngine::loadScene() {
     const char* path = {
         //"../Resources/small/Room_Small.gltf",
-        "../Resources/nowindows/Room_NoWindows.gltf",
-        //"../Resources/windowed/Room_Windowed.gltf",
+        //"../Resources/nowindows/Room_NoWindows.gltf",
+        "../Resources/windowed/Room_Windowed.gltf",
     };
 
     MeshData data;
@@ -888,7 +893,45 @@ void VulkanEngine::cmdEndLabel(VkCommandBuffer cmd) {
     fn(cmd);
 }
 
+// ---------------------------------------------------------------------------
+// Persisted state (Settings + camera) — single binary blob in the working dir.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr uint32_t kStateMagic   = 0x54494445u; // 'TIDE'
+constexpr uint32_t kStateVersion = 1u;
+struct StateBlob {
+    uint32_t  magic, version;
+    Settings  settings;
+    glm::vec3 camPos;
+    float     yaw, pitch, fov;
+};
+constexpr const char* kStateFile = "tide_state.bin";
+}
+
+void VulkanEngine::saveState() {
+    StateBlob b{};
+    b.magic = kStateMagic; b.version = kStateVersion;
+    b.settings = m_settings;
+    b.camPos = m_camera.position;
+    b.yaw = m_camera.yaw; b.pitch = m_camera.pitch; b.fov = m_camera.fovDeg;
+    std::ofstream o(kStateFile, std::ios::binary);
+    if (o) o.write(reinterpret_cast<const char*>(&b), sizeof(b));
+}
+
+bool VulkanEngine::loadState() {
+    std::ifstream i(kStateFile, std::ios::binary);
+    if (!i) return false;
+    StateBlob b{};
+    if (!i.read(reinterpret_cast<char*>(&b), sizeof(b))) return false;
+    if (b.magic != kStateMagic || b.version != kStateVersion) return false;
+    m_settings = b.settings;
+    m_camera.position = b.camPos;
+    m_camera.yaw = b.yaw; m_camera.pitch = b.pitch; m_camera.fovDeg = b.fov;
+    return true;
+}
+
 void VulkanEngine::cleanup() {
+    saveState();
     m_ui.destroy();
     if (m_tracyCtx) TracyVkDestroy(m_tracyCtx); // no-op without TRACY_ENABLE
     for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
