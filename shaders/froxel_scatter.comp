@@ -1,0 +1,106 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+
+// Volumetric fog — scatter pass (Faz 7). One thread per froxel: trace a single
+// RT sun-shadow ray from the froxel center, evaluate in-scatter (sun * phase +
+// ambient) and extinction, then temporally blend with the reprojected previous
+// volume. Output: rgb = in-scatter radiance, a = extinction (per world unit).
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+// Scene set (set 0): only the TLAS is needed for the shadow ray. The pipeline
+// layout binds the full bindless scene set; we declare just binding 5.
+layout(set = 0, binding = 5) uniform accelerationStructureEXT topLevelAS;
+
+#include "rtshadow.glsl"   // rtOccluded() — needs topLevelAS in scope
+#include "froxel.glsl"
+
+layout(rgba16f, set = 1, binding = 0) uniform writeonly image3D scatterOut;
+layout(set = 1, binding = 1) uniform sampler3D scatterPrev; // last frame's volume
+layout(rgba16f, set = 1, binding = 2) uniform readonly image2D directLight; // .a = surface depth
+
+layout(push_constant) uniform Push {
+    mat4  invViewProj;   // unjittered, for froxel -> world
+    mat4  prevViewProj;  // temporal reprojection
+    vec4  camPos;        // xyz
+    vec4  sunDir;        // xyz = dir to sun
+    vec4  sunColor;      // rgb = sun radiance
+    vec4  fog;           // x=density y=scatter z=anisotropy w=ambient
+    uvec4 grid;          // xyz = froxel dims, w = frameIndex
+    vec4  zRange;        // x=zn y=zf z=temporalAlpha w=reset
+    vec4  misc;          // x=jitterScale, y=depthCull, zw=screenSize
+} pc;
+
+void main() {
+    ivec3 c = ivec3(gl_GlobalInvocationID);
+    uvec3 dim = pc.grid.xyz;
+    if (c.x >= int(dim.x) || c.y >= int(dim.y) || c.z >= int(dim.z)) return;
+
+    float zn = pc.zRange.x, zf = pc.zRange.y;
+    // Per-froxel + per-frame jitter inside the cell. Decorrelated across froxels so
+    // the residual is fine noise (not a coherent wobbling lattice); temporal
+    // accumulation then averages it into a smooth, anti-aliased shadow volume.
+    uint js = (uint(c.x) * 1973u + uint(c.y) * 9277u + uint(c.z) * 26699u
+               + pc.grid.w * 6151u + 1u);
+    vec3 jit = (vec3(rtHash(js), rtHash(js), rtHash(js)) - 0.5) * pc.misc.x;
+    vec3 cell = vec3(c) + 0.5 + jit;
+    vec3 P = froxelWorldPos(cell, dim, pc.invViewProj, pc.camPos.xyz, zn, zf);
+
+    vec3 L = normalize(pc.sunDir.xyz);
+    // Single shadow ray per froxel (the function can do more; fog uses 1).
+    float vis = rtOccluded(P, L) ? 0.0 : 1.0;
+
+    vec3  V = normalize(pc.camPos.xyz - P);          // toward the camera
+    float cosTheta = dot(-V, L);                     // view ray vs. light
+    float phase = froxelHG(cosTheta, pc.fog.z);
+
+    float density = pc.fog.x;
+    vec3  inScatter = density * pc.fog.y *
+                      (pc.sunColor.rgb * vis * phase + vec3(pc.fog.w));
+    float extinction = max(density, 1e-5);
+
+    // ----- Temporal: reproject the froxel center into last frame's volume. -----
+    // Reprojection follows the camera, so a moving camera keeps valid history (this
+    // is what averages the per-froxel jitter into smooth beams). Only a true
+    // disocclusion (reprojected outside the volume) falls back to the raw sample.
+    if (pc.zRange.w < 0.5) {
+        vec4 pp = pc.prevViewProj * vec4(P, 1.0);
+        if (pp.w > 0.0) {
+            vec2 puv = (pp.xy / pp.w) * 0.5 + 0.5;
+            float pslice = froxelViewZToSlice(pp.w, zn, zf);
+            if (all(greaterThanEqual(vec3(puv, pslice), vec3(0.0))) &&
+                all(lessThanEqual(vec3(puv, pslice), vec3(1.0)))) {
+                vec4 hist = texture(scatterPrev, vec3(puv, pslice));
+                float a = pc.zRange.z; // EMA toward the new sample
+                inScatter  = mix(hist.rgb, inScatter,  a);
+                extinction = mix(hist.a,   extinction, a);
+            }
+        }
+    }
+
+    // ----- Conservative depth cull (step 2) -----
+    // A froxel contributes light only if it is FULLY in front of the nearest surface
+    // in its screen footprint. If its far face reaches/passes that surface, part of
+    // it is behind a wall -> zero its in-scatter. Errs to less light (clean) instead
+    // of leaking light through walls. Done after temporal so the cut is immediate.
+    if (pc.misc.y > 0.5) {
+        vec2 ss = pc.misc.zw;                               // screen size
+        vec2 hfp = ss / vec2(dim.xy) * 0.5;                // half footprint (pixels)
+        vec2 ctr = (vec2(c.xy) + 0.5) / vec2(dim.xy) * ss; // footprint center pixel
+        vec2 offs[5] = vec2[5](vec2(0.0), vec2(-1.0, -1.0), vec2(1.0, -1.0),
+                               vec2(-1.0, 1.0), vec2(1.0, 1.0));
+        float minD = 1e30;
+        for (int i = 0; i < 5; i++) {
+            ivec2 px = ivec2(clamp(ctr + offs[i] * hfp, vec2(0.0), ss - 1.0));
+            float d = imageLoad(directLight, px).a;        // surface view depth (0 = sky)
+            if (d > 0.0) minD = min(minD, d);
+        }
+        if (minD < 1e29) {
+            float farZ = froxelSliceToViewZ((float(c.z) + 1.0) / float(dim.z), zn, zf);
+            if (farZ >= minD) inScatter = vec3(0.0);
+        }
+    }
+
+    imageStore(scatterOut, c, vec4(inScatter, extinction));
+}

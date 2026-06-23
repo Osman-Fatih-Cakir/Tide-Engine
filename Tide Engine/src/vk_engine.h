@@ -123,6 +123,8 @@ private:
     Dlss m_dlss;
     bool m_lastDlssEnabled = true;
     int  m_lastDlssQuality = -1;
+    int  m_lastFogQuality  = 1;  // tracks fog grid preset changes from UI
+    float m_sunAnimTime    = 0.0f; // sun-sweep phase accumulator
 
     // --- profiling ---
     TracyVkCtx m_tracyCtx = nullptr;

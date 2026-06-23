@@ -92,7 +92,7 @@ void VulkanEngine::init() {
     recreateDlssFeature();
     if (m_scene.setLayout) {
         m_renderer.init(*this, m_swapchainFormat, m_depthFormat, m_scene.setLayout);
-        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent);
+        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent, m_settings.fogQuality);
     }
     m_lastDlssEnabled = m_settings.dlssEnabled;
     m_lastDlssQuality = m_settings.dlssQuality;
@@ -495,7 +495,7 @@ void VulkanEngine::recreateSwapchain() {
     createSwapchain();
     recreateDlssFeature();
     if (m_scene.setLayout)
-        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent);
+        m_renderer.createTargets(*this, m_renderExtent, m_swapchainExtent, m_settings.fogQuality);
 }
 
 VkExtent2D VulkanEngine::computeRenderExtent() {
@@ -606,8 +606,8 @@ void VulkanEngine::immediateSubmit(const std::function<void(VkCommandBuffer)>& f
 void VulkanEngine::loadScene() {
     const char* path = {
         //"../Resources/small/Room_Small.gltf",
-        //"../Resources/nowindows/Room_NoWindows.gltf",
-        "../Resources/windowed/Room_Windowed.gltf",
+        "../Resources/nowindows/Room_NoWindows.gltf",
+        //"../Resources/windowed/Room_Windowed.gltf",
     };
 
     MeshData data;
@@ -746,11 +746,28 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
 void VulkanEngine::drawFrame(float dt) {
     ZoneScoped; // Tracy CPU zone
 
+    // Sun animation: smooth there-and-back sweep between the min/max bounds. The
+    // result lands in m_settings and reaches the GPU via the normal push constants.
+    if (m_settings.sunAnimate) {
+        m_sunAnimTime += dt * m_settings.sunAnimSpeed;
+        float t = 0.5f - 0.5f * std::cos(m_sunAnimTime); // smooth 0..1..0 ping-pong
+        m_settings.sunAzimuthDeg =
+            m_settings.sunAzimuthMin + t * (m_settings.sunAzimuthMax - m_settings.sunAzimuthMin);
+        m_settings.sunElevationDeg =
+            m_settings.sunElevationMin + t * (m_settings.sunElevationMax - m_settings.sunElevationMin);
+    }
+
     // DLSS mode/enable change -> render resolution changes; rebuild targets+feature.
     if (m_settings.dlssEnabled != m_lastDlssEnabled ||
         m_settings.dlssQuality != m_lastDlssQuality) {
         m_lastDlssEnabled = m_settings.dlssEnabled;
         m_lastDlssQuality = m_settings.dlssQuality;
+        recreateSwapchain();
+        return;
+    }
+    // Fog grid preset change -> rebuild the froxel volumes at the new dimensions.
+    if (m_settings.fogQuality != m_lastFogQuality) {
+        m_lastFogQuality = m_settings.fogQuality;
         recreateSwapchain();
         return;
     }

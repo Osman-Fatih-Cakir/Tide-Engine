@@ -1,0 +1,44 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Volumetric fog — apply pass (Faz 7). Per screen pixel: find its froxel z-slice
+// from the scene's linear depth (packed in directLight.a by the resolve pass),
+// trilinearly sample the integrated volume and composite onto HDR:
+//   hdr = hdr * transmittance + inScatter.
+// Sky/empty pixels have depth 0 -> treated as the far extent (full fog column,
+// so god rays remain visible against the bright window).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "froxel.glsl"
+
+layout(set = 0, binding = 0) uniform sampler3D integrated;     // accum + transmittance
+layout(rgba16f, set = 0, binding = 1) uniform image2D hdrImage; // read scene, write fogged
+layout(rgba16f, set = 0, binding = 2) uniform readonly image2D directLight; // .a = linear depth
+
+layout(push_constant) uniform Push {
+    uvec4 grid;       // xyz = froxel dims
+    uvec2 screenSize;
+    vec2  zRange;      // x=zn y=zf
+} pc;
+
+void main() {
+    ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= int(pc.screenSize.x) || pix.y >= int(pc.screenSize.y)) return;
+
+    float zn = pc.zRange.x, zf = pc.zRange.y;
+    float depth = imageLoad(directLight, pix).a; // view-space (clip.w) or 0 = sky
+    float vz = (depth > 0.0) ? clamp(depth, zn, zf) : zf;
+
+    vec2  uv = (vec2(pix) + 0.5) / vec2(pc.screenSize);
+    // Conservative depth: pull the sample HALF A FROXEL toward the camera so the
+    // froxel straddling the visible surface (its back half is behind the wall) is
+    // excluded. Biases fog to stop just short of surfaces -> no light leak across
+    // them (errs to slightly-less fog, which temporal smoothing hides cleanly).
+    float slice = froxelViewZToSlice(vz, zn, zf) - 0.5 / float(pc.grid.z);
+    slice = max(slice, 0.0);
+    vec4  fog = texture(integrated, vec3(uv, slice));
+
+    vec3 hdr = imageLoad(hdrImage, pix).rgb;
+    imageStore(hdrImage, pix, vec4(hdr * fog.a + fog.rgb, 1.0));
+}

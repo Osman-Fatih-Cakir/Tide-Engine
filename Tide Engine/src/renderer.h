@@ -20,7 +20,8 @@ public:
 
     // (Re)create the targets. renderExtent sizes vis/hdr/shadow/motion/depth;
     // displayExtent sizes the DLSS output. Call on init and every resize/mode change.
-    void createTargets(VulkanEngine& eng, VkExtent2D renderExtent, VkExtent2D displayExtent);
+    void createTargets(VulkanEngine& eng, VkExtent2D renderExtent, VkExtent2D displayExtent,
+                       int fogQuality);
     void destroyTargets(VulkanEngine& eng);
 
     void destroy(VulkanEngine& eng);
@@ -66,6 +67,29 @@ private:
     bool       m_dlssReset = true;      // drop DLSS temporal history (set on (re)create)
     VkSampler  m_hdrSampler = VK_NULL_HANDLE;
     VkSampler  m_histSampler = VK_NULL_HANDLE;
+
+    // Volumetric fog (Faz 7): camera-frustum froxel volume (3D images).
+    Image      m_froxelScatter[2]{};    // RGBA16F: rgb in-scatter, a extinction (temporal ping-pong)
+    Image      m_froxelIntegrated{};    // RGBA16F: rgb accumulated in-scatter, a transmittance
+    VkSampler  m_froxelSampler = VK_NULL_HANDLE; // linear 3D sampler (clamp)
+    VkExtent3D m_froxelDim = {160, 90, 64};
+    uint32_t   m_fogHistIndex = 0;      // which scatter image is "current"
+    bool       m_haveFogHistory = false;
+    glm::mat4  m_prevFogViewProj = glm::mat4(1.0f);
+
+    VkPipeline            m_fogScatterPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout      m_fogScatterLayout   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_fogScatterSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_fogScatterSet[2]   = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkPipeline            m_fogIntegratePipeline = VK_NULL_HANDLE;
+    VkPipelineLayout      m_fogIntegrateLayout   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_fogIntegrateSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_fogIntegrateSet[2]   = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkPipeline            m_fogApplyPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout      m_fogApplyLayout   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_fogApplySetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_fogApplySet      = VK_NULL_HANDLE;
+    VkDescriptorPool      m_fogPool = VK_NULL_HANDLE;
 
     // Temporal shadow state.
     uint32_t   m_histIndex = 0;         // which m_shadowHist is "current" (write)

@@ -6,6 +6,7 @@
 #include "dlss.h"
 #include <cstddef>   // offsetof
 #include <algorithm> // sort
+#include <cmath>     // fabs
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,38 @@ struct AtrousPush {
 struct TonemapPush {
     float exposure;
 };
+struct FogScatterPush {
+    glm::mat4  invViewProj;
+    glm::mat4  prevViewProj;
+    glm::vec4  camPos;
+    glm::vec4  sunDir;
+    glm::vec4  sunColor;
+    glm::vec4  fog;      // x=density y=scatter z=anisotropy w=ambient
+    glm::uvec4 grid;     // xyz dims, w frame
+    glm::vec4  zRange;   // x=zn y=zf z=temporalAlpha w=reset
+    glm::vec4  misc;     // x=jitterScale
+};
+struct FogIntegratePush {
+    glm::uvec4 grid;
+    glm::vec4  zRange;   // x=zn y=zf
+};
+struct FogApplyPush {
+    glm::uvec4 grid;
+    glm::uvec2 screenSize;
+    glm::vec2  zRange;   // x=zn y=zf
+};
+
+// Froxel near extent (world units). Slightly past the camera near plane.
+static constexpr float FOG_ZNEAR = 0.1f;
+
+// Froxel grid dimensions for a quality preset (0 Low, 1 Medium, 2 High).
+static VkExtent3D fogGridDim(int quality) {
+    switch (quality) {
+        case 0:  return {128, 72, 48};
+        case 2:  return {240, 135, 96};
+        default: return {160, 90, 64};
+    }
+}
 struct TransparentPush {
     glm::mat4 viewProj;
     glm::mat4 model;
@@ -84,6 +117,37 @@ static Image makeImage(VulkanEngine& eng, VkFormat format, VkImageUsageFlags usa
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vci.format = format;
     vci.subresourceRange = {aspect, 0, 1, 0, 1};
+    VK_CHECK(vkCreateImageView(eng.device(), &vci, nullptr, &img.view));
+
+    eng.setDebugName((uint64_t)img.image, VK_OBJECT_TYPE_IMAGE, name);
+    return img;
+}
+
+static Image makeImage3D(VulkanEngine& eng, VkFormat format, VkImageUsageFlags usage,
+                         VkExtent3D extent, const char* name) {
+    Image img{};
+    VkImageCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_3D;
+    ici.format = format;
+    ici.extent = extent;
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = usage;
+
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO;
+    ai.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    VK_CHECK(vmaCreateImage(eng.allocator(), &ici, &ai, &img.image, &img.alloc, nullptr));
+
+    VkImageViewCreateInfo vci{};
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = img.image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+    vci.format = format;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VK_CHECK(vkCreateImageView(eng.device(), &vci, nullptr, &img.view));
 
     eng.setDebugName((uint64_t)img.image, VK_OBJECT_TYPE_IMAGE, name);
@@ -614,13 +678,159 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         vkDestroyShaderModule(device, vert, nullptr);
         vkDestroyShaderModule(device, frag, nullptr);
     }
+
+    // ======================= Volumetric fog (Faz 7) =======================
+    // Linear 3D sampler (clamp) for froxel reprojection + the apply lookup.
+    {
+        VkSamplerCreateInfo sci{};
+        sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sci.magFilter = VK_FILTER_LINEAR;
+        sci.minFilter = VK_FILTER_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        VK_CHECK(vkCreateSampler(device, &sci, nullptr, &m_froxelSampler));
+    }
+    // Fog descriptor set layouts.
+    {
+        // Scatter set: b0 scatterOut (storage), b1 scatterPrev (sampler),
+        // b2 directLight (storage read; .a = surface depth for the depth cull).
+        VkDescriptorSetLayoutBinding b[3]{};
+        b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[2].descriptorCount = 1; b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 3; lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_fogScatterSetLayout));
+    }
+    {
+        // Integrate set: b0 scatterIn (storage), b1 integratedOut (storage).
+        VkDescriptorSetLayoutBinding b[2]{};
+        for (uint32_t i = 0; i < 2; i++) {
+            b[i].binding = i; b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 2; lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_fogIntegrateSetLayout));
+    }
+    {
+        // Apply set: b0 integrated (sampler), b1 hdr (storage rw), b2 directLight (storage read).
+        VkDescriptorSetLayoutBinding b[3]{};
+        b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[2].descriptorCount = 1; b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 3; lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_fogApplySetLayout));
+    }
+    // Fog descriptor pool + sets (views written in createTargets).
+    {
+        VkDescriptorPoolSize sizes[2]{};
+        sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        sizes[0].descriptorCount = 10; // scatter 2*2 + integrate 2*2 + apply 2
+        sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sizes[1].descriptorCount = 3; // scatter 2 (prev) + apply 1 (integrated)
+        VkDescriptorPoolCreateInfo pci{};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets = 5; // 2 scatter + 2 integrate + 1 apply
+        pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+        VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_fogPool));
+
+        VkDescriptorSetAllocateInfo dai{};
+        dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dai.descriptorPool = m_fogPool;
+        dai.descriptorSetCount = 1;
+        dai.pSetLayouts = &m_fogScatterSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_fogScatterSet[0]));
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_fogScatterSet[1]));
+        dai.pSetLayouts = &m_fogIntegrateSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_fogIntegrateSet[0]));
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_fogIntegrateSet[1]));
+        dai.pSetLayouts = &m_fogApplySetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_fogApplySet));
+    }
+    // Scatter pipeline: set0 scene (TLAS), set1 fog scatter.
+    {
+        VkShaderModule comp = loadShaderModule(device, "shaders/froxel_scatter.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pc.size = sizeof(FogScatterPush);
+        VkDescriptorSetLayout sets[2] = {sceneSetLayout, m_fogScatterSetLayout};
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 2; lci.pSetLayouts = sets;
+        lci.pushConstantRangeCount = 1; lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_fogScatterLayout));
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = comp; cpi.stage.pName = "main";
+        cpi.layout = m_fogScatterLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_fogScatterPipeline));
+        vkDestroyShaderModule(device, comp, nullptr);
+    }
+    // Integrate pipeline.
+    {
+        VkShaderModule comp = loadShaderModule(device, "shaders/froxel_integrate.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pc.size = sizeof(FogIntegratePush);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 1; lci.pSetLayouts = &m_fogIntegrateSetLayout;
+        lci.pushConstantRangeCount = 1; lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_fogIntegrateLayout));
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = comp; cpi.stage.pName = "main";
+        cpi.layout = m_fogIntegrateLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_fogIntegratePipeline));
+        vkDestroyShaderModule(device, comp, nullptr);
+    }
+    // Apply pipeline.
+    {
+        VkShaderModule comp = loadShaderModule(device, "shaders/fog_apply.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pc.size = sizeof(FogApplyPush);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 1; lci.pSetLayouts = &m_fogApplySetLayout;
+        lci.pushConstantRangeCount = 1; lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_fogApplyLayout));
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = comp; cpi.stage.pName = "main";
+        cpi.layout = m_fogApplyLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_fogApplyPipeline));
+        vkDestroyShaderModule(device, comp, nullptr);
+    }
 }
 
-void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D displayExtent) {
+void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D displayExtent,
+                             int fogQuality) {
     destroyTargets(eng);
     m_extent = extent;
     m_displayExtent = displayExtent;
     m_dlssReset = true; // history is invalid after (re)creating resources
+    m_froxelDim = fogGridDim(fogQuality);
+    m_haveFogHistory = false;
+    m_fogHistIndex = 0;
 
     m_vis = makeImage(eng, VK_FORMAT_R32_UINT,
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
@@ -664,11 +874,20 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
                              VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                              displayExtent, VK_IMAGE_ASPECT_COLOR_BIT, "DLSS Output");
 
-    // Initialize history images + shadowOut2 to GENERAL so the per-frame GENERAL->GENERAL
-    // barriers are always valid. (shadowHist read needs it; shadowOut2 is only ever touched
-    // by à-trous, which assumes GENERAL — resolve never transitions it.)
+    // Froxel volumes (3D). Kept permanently in GENERAL: storage writes + sampler reads.
+    VkImageUsageFlags froxelUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    for (int i = 0; i < 2; i++)
+        m_froxelScatter[i] = makeImage3D(eng, VK_FORMAT_R16G16B16A16_SFLOAT, froxelUsage,
+                                         m_froxelDim, i == 0 ? "Froxel Scatter 0" : "Froxel Scatter 1");
+    m_froxelIntegrated = makeImage3D(eng, VK_FORMAT_R16G16B16A16_SFLOAT, froxelUsage,
+                                     m_froxelDim, "Froxel Integrated");
+
+    // Initialize history images + shadowOut2 + froxel volumes to GENERAL so the per-frame
+    // GENERAL->GENERAL barriers are always valid. (shadowHist read needs it; shadowOut2 is
+    // only ever touched by à-trous, which assumes GENERAL — resolve never transitions it.)
     eng.immediateSubmit([&](VkCommandBuffer cmd) {
-        for (VkImage g : {m_shadowHist[0].image, m_shadowHist[1].image, m_shadowOut2.image})
+        for (VkImage g : {m_shadowHist[0].image, m_shadowHist[1].image, m_shadowOut2.image,
+                          m_froxelScatter[0].image, m_froxelScatter[1].image, m_froxelIntegrated.image})
             imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -752,6 +971,35 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     add(m_atrousSet[1], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
     add(m_tonemapSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrSamp);
     add(m_tonemapSetDlss, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &dlssSamp);
+
+    // ----- Fog descriptor writes (all froxel volumes live in GENERAL) -----
+    VkDescriptorImageInfo froxelStore[2]{}, froxelSamp[2]{}, integStore{}, integSamp{};
+    for (int i = 0; i < 2; i++) {
+        froxelStore[i].imageView = m_froxelScatter[i].view;
+        froxelStore[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        froxelSamp[i].sampler = m_froxelSampler;
+        froxelSamp[i].imageView = m_froxelScatter[i].view;
+        froxelSamp[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    }
+    integStore.imageView = m_froxelIntegrated.view; integStore.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    integSamp.sampler = m_froxelSampler;
+    integSamp.imageView = m_froxelIntegrated.view;  integSamp.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    // Scatter set[k]: writes scatter[k] (b0), reads scatter[1-k] (b1).
+    for (int k = 0; k < 2; k++) {
+        add(m_fogScatterSet[k], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &froxelStore[k]);
+        add(m_fogScatterSet[k], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &froxelSamp[1 - k]);
+        add(m_fogScatterSet[k], 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
+    }
+    // Integrate set[k]: reads scatter[k] (b0), writes integrated (b1).
+    for (int k = 0; k < 2; k++) {
+        add(m_fogIntegrateSet[k], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &froxelStore[k]);
+        add(m_fogIntegrateSet[k], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &integStore);
+    }
+    // Apply set: integrated (b0, sampled), hdr (b1, rw), directLight (b2, read .a depth).
+    add(m_fogApplySet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &integSamp);
+    add(m_fogApplySet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &hdrStore);
+    add(m_fogApplySet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
+
     vkUpdateDescriptorSets(eng.device(), (uint32_t)w.size(), w.data(), 0, nullptr);
 }
 
@@ -768,6 +1016,9 @@ void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_shadowOut);
     destroyImage(eng.allocator(), eng.device(), m_shadowOut2);
     destroyImage(eng.allocator(), eng.device(), m_dlssOutput);
+    destroyImage(eng.allocator(), eng.device(), m_froxelScatter[0]);
+    destroyImage(eng.allocator(), eng.device(), m_froxelScatter[1]);
+    destroyImage(eng.allocator(), eng.device(), m_froxelIntegrated);
 }
 
 void Renderer::destroy(VulkanEngine& eng) {
@@ -792,6 +1043,18 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_atrousSetLayout) vkDestroyDescriptorSetLayout(device, m_atrousSetLayout, nullptr);
     if (m_tonemapSetLayout) vkDestroyDescriptorSetLayout(device, m_tonemapSetLayout, nullptr);
     if (m_pool) vkDestroyDescriptorPool(device, m_pool, nullptr);
+    // Fog.
+    if (m_froxelSampler) vkDestroySampler(device, m_froxelSampler, nullptr);
+    if (m_fogScatterPipeline) vkDestroyPipeline(device, m_fogScatterPipeline, nullptr);
+    if (m_fogScatterLayout) vkDestroyPipelineLayout(device, m_fogScatterLayout, nullptr);
+    if (m_fogIntegratePipeline) vkDestroyPipeline(device, m_fogIntegratePipeline, nullptr);
+    if (m_fogIntegrateLayout) vkDestroyPipelineLayout(device, m_fogIntegrateLayout, nullptr);
+    if (m_fogApplyPipeline) vkDestroyPipeline(device, m_fogApplyPipeline, nullptr);
+    if (m_fogApplyLayout) vkDestroyPipelineLayout(device, m_fogApplyLayout, nullptr);
+    if (m_fogScatterSetLayout) vkDestroyDescriptorSetLayout(device, m_fogScatterSetLayout, nullptr);
+    if (m_fogIntegrateSetLayout) vkDestroyDescriptorSetLayout(device, m_fogIntegrateSetLayout, nullptr);
+    if (m_fogApplySetLayout) vkDestroyDescriptorSetLayout(device, m_fogApplySetLayout, nullptr);
+    if (m_fogPool) vkDestroyDescriptorPool(device, m_fogPool, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -850,8 +1113,11 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
     int  mode    = dlssActive ? 0 : settings.shadowDenoiseMode;
     bool temporalOn = mode >= 1;     // temporal accumulation (modes 1,2)
     bool svgfOn     = mode == 2;     // à-trous spatial filter
-    bool sunMoved = settings.sunAzimuthDeg != m_prevSunAz ||
-                    settings.sunElevationDeg != m_prevSunEl;
+    // Reset temporal history only on a LARGE sun jump (e.g. dragging the slider).
+    // A slow animation moves the sun a tiny amount per frame, which the temporal
+    // accumulation should follow (not reset), or shadows/fog stay noisy.
+    bool sunMoved = std::fabs(settings.sunAzimuthDeg - m_prevSunAz) > 1.0f ||
+                    std::fabs(settings.sunElevationDeg - m_prevSunEl) > 1.0f;
     bool reset = !m_haveHistory || sunMoved || !temporalOn;
     glm::vec4 temporal(reset ? 1.0f : 0.0f,
                        settings.shadowHistAlpha,
@@ -1052,6 +1318,106 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                            0, sizeof(CompositePush), &cp);
         vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
         m_eng->cmdEndLabel(cmd);
+    }
+
+    // ===================== Volumetric Fog (Faz 7) =====================
+    // Froxel scatter (1 RT shadow ray each) -> Z integrate -> apply onto HDR. Runs
+    // after the opaque composite, before transparency, so RR later denoises+upscales
+    // the fogged image. directLight.a carries linear depth for the apply lookup.
+    {
+        bool fogOn = settings.fogEnabled && !settings.debugMotionVecs;
+        if (fogOn) {
+            TracyVkZone(tracy, cmd, "Volumetric");
+            m_eng->cmdBeginLabel(cmd, "Volumetric Fog");
+            uint32_t fcur = m_fogHistIndex;
+            glm::uvec4 grid(m_froxelDim.width, m_froxelDim.height, m_froxelDim.depth,
+                            frame & 0xFFFFu);
+            float zn = FOG_ZNEAR, zf = settings.fogMaxDistance;
+            bool fogReset = !m_haveFogHistory || sunMoved;
+
+            // ---- Scatter (per froxel) ----
+            for (VkImage g : {m_froxelScatter[0].image, m_froxelScatter[1].image})
+                imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+            // directLight (.a = depth) written by resolve -> read by the depth cull.
+            imgBarrier(cmd, m_directLight.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogScatterPipeline);
+            VkDescriptorSet sSets[2] = {scene.descriptorSet, m_fogScatterSet[fcur]};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogScatterLayout,
+                                    0, 2, sSets, 0, nullptr);
+            FogScatterPush sp{};
+            sp.invViewProj = glm::inverse(viewProj);
+            sp.prevViewProj = m_prevFogViewProj;
+            sp.camPos = glm::vec4(cameraPos, 1.0f);
+            sp.sunDir = glm::vec4(sun, 0.0f);
+            sp.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+            sp.fog = glm::vec4(settings.fogDensity, settings.fogScatter,
+                               settings.fogAnisotropy, settings.fogAmbient);
+            sp.grid = grid;
+            sp.zRange = glm::vec4(zn, zf, settings.fogTemporalAlpha, fogReset ? 1.0f : 0.0f);
+            sp.misc = glm::vec4(settings.fogJitter ? 1.0f : 0.0f,
+                                settings.fogDepthCull ? 1.0f : 0.0f,
+                                (float)extent.width, (float)extent.height);
+            vkCmdPushConstants(cmd, m_fogScatterLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(FogScatterPush), &sp);
+            vkCmdDispatch(cmd, (m_froxelDim.width + 3) / 4, (m_froxelDim.height + 3) / 4,
+                          (m_froxelDim.depth + 3) / 4);
+
+            // ---- Integrate (front-to-back along Z) ----
+            imgBarrier(cmd, m_froxelScatter[fcur].image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+            imgBarrier(cmd, m_froxelIntegrated.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogIntegratePipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogIntegrateLayout,
+                                    0, 1, &m_fogIntegrateSet[fcur], 0, nullptr);
+            FogIntegratePush ip{grid, glm::vec4(zn, zf, (float)settings.fogBlurRadius, 0.0f)};
+            vkCmdPushConstants(cmd, m_fogIntegrateLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(FogIntegratePush), &ip);
+            vkCmdDispatch(cmd, (m_froxelDim.width + 7) / 8, (m_froxelDim.height + 7) / 8, 1);
+
+            // ---- Apply onto HDR ----
+            imgBarrier(cmd, m_froxelIntegrated.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+            imgBarrier(cmd, m_directLight.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+            imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogApplyPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogApplyLayout,
+                                    0, 1, &m_fogApplySet, 0, nullptr);
+            FogApplyPush ap{grid, glm::uvec2(extent.width, extent.height), glm::vec2(zn, zf)};
+            vkCmdPushConstants(cmd, m_fogApplyLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(FogApplyPush), &ap);
+            vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+
+            m_eng->cmdEndLabel(cmd);
+            m_haveFogHistory = true;
+            m_fogHistIndex = 1 - fcur;
+        } else {
+            m_haveFogHistory = false; // volume goes stale while fog is off
+        }
+        m_prevFogViewProj = viewProj;
     }
 
     // ===================== Pass C: Transparent forward (blend -> HDR) =====================

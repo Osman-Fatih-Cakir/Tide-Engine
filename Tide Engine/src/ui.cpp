@@ -122,8 +122,23 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
 
     ImGui::SeparatorText("Sun");
     ImGui::PushItemWidth(150.0f); // fixed slider width
-    ImGui::SliderFloat("Azimuth",   &s.sunAzimuthDeg,   0.0f, 360.0f);
-    ImGui::SliderFloat("Elevation", &s.sunElevationDeg, -10.0f, 90.0f);
+    ImGui::Checkbox("Animate", &s.sunAnimate);
+    if (s.sunAnimate) {
+        // Min/max bounds shown side by side; azimuth and elevation each on one row.
+        ImGui::PushItemWidth(70.0f);
+        ImGui::SliderFloat("##azMin", &s.sunAzimuthMin, 0.0f, 360.0f, "%.0f");
+        ImGui::SameLine();
+        ImGui::SliderFloat("Azimuth##range", &s.sunAzimuthMax, 0.0f, 360.0f, "%.0f");
+        ImGui::SliderFloat("##elMin", &s.sunElevationMin, -10.0f, 90.0f, "%.0f");
+        ImGui::SameLine();
+        ImGui::SliderFloat("Elevation##range", &s.sunElevationMax, -10.0f, 90.0f, "%.0f");
+        ImGui::PopItemWidth();
+        ImGui::SliderFloat("Speed", &s.sunAnimSpeed, 0.02f, 1.0f, "%.2f");
+        ImGui::Text("Now: az %.0f  el %.0f", s.sunAzimuthDeg, s.sunElevationDeg);
+    } else {
+        ImGui::SliderFloat("Azimuth",   &s.sunAzimuthDeg,   0.0f, 360.0f);
+        ImGui::SliderFloat("Elevation", &s.sunElevationDeg, -10.0f, 90.0f);
+    }
     ImGui::SliderFloat("Intensity", &s.sunIntensity,    0.0f, 20.0f);
     ImGui::SliderFloat("Ambient",   &s.ambient,         0.0f, 1.0f);
 
@@ -146,9 +161,9 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     s.shadowDenoiseMode = (s.denoiser <= 2) ? s.denoiser : 0;
 
     if (s.denoiser == 1) {            // Temporal
-        ImGui::SliderFloat("History", &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
+        ImGui::SliderFloat("History", &s.shadowHistAlpha, 0.001f, 0.5f, "%.3f");
     } else if (s.denoiser == 2) {     // SVGF
-        ImGui::SliderFloat("History",       &s.shadowHistAlpha, 0.02f, 1.0f, "%.2f");
+        ImGui::SliderFloat("History", &s.shadowHistAlpha, 0.001f, 0.5f, "%.3f");
         ImGui::SliderInt("A-trous iters",   &s.svgfIterations,  1, 5);
         ImGui::SliderFloat("Phi normal",    &s.svgfPhiNormal,   1.0f, 128.0f, "%.0f");
         ImGui::SliderFloat("Phi depth",     &s.svgfPhiDepth,    0.05f, 4.0f, "%.2f");
@@ -164,6 +179,55 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
             ImGui::TextColored(ImVec4(1, 1, 0.4f, 1), "Status: off (native %ux%u)", s.displayW, s.displayH);
     }
     ImGui::Checkbox("Debug: motion vectors", &s.debugMotionVecs);
+
+    ImGui::SeparatorText("Volumetric Fog");
+    ImGui::Checkbox("Fog enabled", &s.fogEnabled);
+    ImGui::SetItemTooltip("Job: the froxel volumetric god-ray pipeline (scatter -> integrate -> apply).\n"
+                          "Result: light shafts in the air. Off = scene renders exactly as before.");
+    if (s.fogEnabled) {
+        const char* fogQ[] = {"Low", "Medium", "High"};
+        ImGui::Combo("Grid quality", &s.fogQuality, fogQ, IM_ARRAYSIZE(fogQ));
+        ImGui::SetItemTooltip("Job: froxel grid resolution (Low 128x72x48 / Med 160x90x64 / High 240x135x96).\n"
+                              "Result: sharper, less blocky beams.\n"
+                              "Higher = crisper + less leak, but more GPU cost. Lower = faster, coarser.");
+        ImGui::Checkbox("Jitter (temporal AA)", &s.fogJitter);
+        ImGui::SetItemTooltip("Job: nudges each froxel's shadow sample a little every frame; temporal averages them.\n"
+                              "Result: turns hard 0/1 shadow edges into soft penumbra.\n"
+                              "On = smoother IF the view is steady, but adds shimmer while moving.\n"
+                              "Off = perfectly stable but blocky (use Volume blur instead).");
+        ImGui::Checkbox("Depth cull (no leak)", &s.fogDepthCull);
+        ImGui::SetItemTooltip("Job: zeroes any froxel whose far face reaches past the visible surface.\n"
+                              "Result: light no longer leaks through walls/floor into shadowed areas.\n"
+                              "On = clean (errs to slightly less fog near surfaces). Off = leaks return.");
+        ImGui::SliderInt("Blur radius", &s.fogBlurRadius, 0, 3);
+        ImGui::SetItemTooltip("Job: deterministic NxNxN box blur of the froxel volume (N=2r+1).\n"
+                              "Result: smooths blocky beams WITHOUT any motion/shimmer (unlike jitter).\n"
+                              "Higher = smoother but softer/wider beams + more cost. 0 = off (blocky).");
+        ImGui::SliderFloat("Density",     &s.fogDensity,      0.0f, 0.3f, "%.3f");
+        ImGui::SetItemTooltip("Job: extinction per world unit (how thick the medium is).\n"
+                              "Result: overall fog amount.\n"
+                              "Higher = denser haze, brighter beams, less visibility. Lower = thinner/clearer.");
+        ImGui::SliderFloat("Scatter",     &s.fogScatter,      0.0f, 2.0f, "%.2f");
+        ImGui::SetItemTooltip("Job: scattering albedo (how much in-scattered sunlight a froxel emits).\n"
+                              "Result: brightness of the beams.\n"
+                              "Higher = brighter shafts. Lower = dimmer (density unchanged).");
+        ImGui::SliderFloat("Anisotropy",  &s.fogAnisotropy,  -0.9f, 0.95f, "%.2f");
+        ImGui::SetItemTooltip("Job: Henyey-Greenstein g, the scattering directionality.\n"
+                              "Result: how concentrated the glow is around the sun direction.\n"
+                              "Higher (->1) = sharp forward beams (looking toward sun). 0 = uniform glow. Negative = back-scatter.");
+        ImGui::SliderFloat("Fog ambient", &s.fogAmbient,      0.0f, 0.5f, "%.3f");
+        ImGui::SetItemTooltip("Job: constant in-scatter added to every froxel (sky fill in the medium).\n"
+                              "Result: base haze even where the sun doesn't reach.\n"
+                              "Higher = milky/foggy everywhere. Lower = only lit shafts show, shadows stay clear.");
+        ImGui::SliderFloat("Temporal",    &s.fogTemporalAlpha, 0.001f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("Job: EMA blend weight of THIS frame vs accumulated history (jitter averaging).\n"
+                              "Result: how fast the volume converges vs how stable it is.\n"
+                              "Lower = smoother/more stable but laggier. Higher = responsive but noisier/shimmery.");
+        ImGui::SliderFloat("Max distance",&s.fogMaxDistance,  5.0f, 200.0f, "%.0f");
+        ImGui::SetItemTooltip("Job: far extent of the froxel volume (world units); Z slices pack into this range.\n"
+                              "Result: how far fog is computed.\n"
+                              "Higher = fog reaches farther but coarser per-slice (more blocky far away). Lower = denser slices up close.");
+    }
 
     ImGui::SeparatorText("Tonemap");
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 5.0f);

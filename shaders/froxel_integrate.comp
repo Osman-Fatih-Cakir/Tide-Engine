@@ -1,0 +1,64 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Volumetric fog — integrate pass (Faz 7). One thread per (x,y) column marches
+// the scatter volume front-to-back along Z, accumulating in-scattered radiance
+// weighted by transmittance. Output per froxel: rgb = accumulated in-scatter,
+// a = transmittance from the camera to the front of that slice's far face.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "froxel.glsl"
+
+layout(rgba16f, set = 0, binding = 0) uniform readonly  image3D scatterIn;
+layout(rgba16f, set = 0, binding = 1) uniform writeonly image3D integratedOut;
+
+layout(push_constant) uniform Push {
+    uvec4 grid;   // xyz = froxel dims
+    vec4  zRange; // x=zn y=zf z=blurRadius
+} pc;
+
+// Scatter sample with an optional 3x3x3 box blur (deterministic smoothing of the
+// blocky single-ray field — independent of jitter/temporal, so it stays stable).
+vec4 sampleScatter(ivec3 c, uvec3 dim, int br) {
+    if (br <= 0) return imageLoad(scatterIn, c);
+    vec4 sum = vec4(0.0);
+    float cnt = 0.0;
+    for (int dz = -br; dz <= br; dz++)
+    for (int dy = -br; dy <= br; dy++)
+    for (int dx = -br; dx <= br; dx++) {
+        ivec3 q = clamp(c + ivec3(dx, dy, dz), ivec3(0), ivec3(dim) - 1);
+        sum += imageLoad(scatterIn, q);
+        cnt += 1.0;
+    }
+    return sum / cnt;
+}
+
+void main() {
+    uvec3 dim = pc.grid.xyz;
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= int(dim.x) || xy.y >= int(dim.y)) return;
+
+    float zn = pc.zRange.x, zf = pc.zRange.y;
+
+    int   br = int(pc.zRange.z); // blur radius (0 = off)
+    vec3  accum = vec3(0.0);
+    float transmittance = 1.0;
+    float prevVZ = zn;
+
+    for (int z = 0; z < int(dim.z); z++) {
+        vec4 s = sampleScatter(ivec3(xy, z), dim, br);
+        // Slice thickness in world units (exponential spacing).
+        float vz = froxelSliceToViewZ((float(z) + 1.0) / float(dim.z), zn, zf);
+        float stepLen = max(vz - prevVZ, 0.0);
+        prevVZ = vz;
+
+        float sliceT = exp(-s.a * stepLen);
+        // Energy-conserving analytic integration over the slice.
+        vec3 scatterInt = s.rgb * (1.0 - sliceT) / max(s.a, 1e-5);
+        accum += transmittance * scatterInt;
+        transmittance *= sliceT;
+
+        imageStore(integratedOut, ivec3(xy, z), vec4(accum, transmittance));
+    }
+}
