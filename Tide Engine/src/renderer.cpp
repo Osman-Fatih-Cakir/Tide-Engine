@@ -1540,7 +1540,11 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
         push.shadowCfg = shadowCfg;
         push.temporal = temporal;
-        push.jitter = glm::vec4(jitterNDC, settings.debugMotionVecs ? 1.0f : 0.0f, 0.0f);
+        // DLSS mip LOD bias: log2(renderRes/displayRes) (negative) keeps textures sharp
+        // for the upscaler; 0 when rendering at native res.
+        float mipBias = dlssActive
+            ? std::log2((float)renderExtent.width / (float)displayExtent.width) : 0.0f;
+        push.jitter = glm::vec4(jitterNDC, settings.debugMotionVecs ? 1.0f : 0.0f, mipBias);
         push.screenSize = glm::uvec2(extent.width, extent.height);
         vkCmdPushConstants(cmd, m_resolveLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(ResolvePush), &push);

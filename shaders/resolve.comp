@@ -71,7 +71,7 @@ layout(push_constant) uniform Push {
     vec4  sunColor;      // rgb = radiance
     vec4  shadowCfg;     // x=sunConeRad y=samples z=shadowsOn w=frameIndex
     vec4  temporal;      // x=reset y=histAlpha z=denoiseOn
-    vec4  jitter;        // xy = current jitter in NDC, z = debugMotion flag
+    vec4  jitter;        // xy = jitter NDC, z = debugMotion flag, w = mip LOD bias
     uvec2 screenSize;
 } pc;
 
@@ -181,6 +181,12 @@ void main() {
                         n0.xy, n1.xy, n2.xy, invW, area, a0.uv, a1.uv, a2.uv);
     vec2 dUVdx = tuvX - tuv;
     vec2 dUVdy = tuvY - tuv;
+    // DLSS mip LOD bias: render res < display res picks coarser mips; shift the
+    // sampled LOD by jitter.w (= log2(renderRes/displayRes), negative) so textures
+    // stay sharp for the upscaler. Scaling the gradients by exp2(bias) == LOD + bias.
+    float lodScale = exp2(pc.jitter.w);
+    dUVdx *= lodScale;
+    dUVdy *= lodScale;
 
     // Interpolated tangent (glTF vertex tangent; .w = handedness).
     vec4 tan4 = a0.tangent * pw.x + a1.tangent * pw.y + a2.tangent * pw.z;
