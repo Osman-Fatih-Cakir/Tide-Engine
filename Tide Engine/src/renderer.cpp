@@ -52,6 +52,8 @@ struct FogScatterPush {
     glm::uvec4 grid;     // xyz dims, w frame
     glm::vec4  zRange;   // x=zn y=zf z=temporalAlpha w=reset
     glm::vec4  misc;     // x=jitterScale
+    glm::vec4  boxMin;   // xyz local fog box min, w = enable
+    glm::vec4  boxMax;   // xyz local fog box max, w = edge softness
 };
 struct FogIntegratePush {
     glm::uvec4 grid;
@@ -110,6 +112,7 @@ struct DdgiParams {                 // matches the DdgiParams UBO in ddgi.glsl (
 };
 struct DdgiUpdatePush { int mode; }; // 0 = irradiance atlas, 1 = depth atlas
 struct ProbeDebugPush { glm::mat4 viewProj; float radius; };
+struct BoxDebugPush { glm::mat4 viewProj; glm::vec4 boxMin; glm::vec4 boxMax; };
 
 // ---------------------------------------------------------------------------
 // Small helpers.
@@ -761,18 +764,15 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     }
     // Fog descriptor set layouts.
     {
-        // Scatter set: b0 scatterOut (storage), b1 scatterPrev (sampler),
-        // b2 directLight (storage read; .a = surface depth for the depth cull).
-        VkDescriptorSetLayoutBinding b[3]{};
+        // Scatter set: b0 scatterOut (storage), b1 scatterPrev (sampler).
+        VkDescriptorSetLayoutBinding b[2]{};
         b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        b[2].descriptorCount = 1; b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 3; lci.pBindings = b;
+        lci.bindingCount = 2; lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_fogScatterSetLayout));
     }
     {
@@ -1020,6 +1020,75 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         vkDestroyShaderModule(device, vert, nullptr);
         vkDestroyShaderModule(device, frag, nullptr);
     }
+    // Fog box debug pipeline: line-list wireframe into HDR, depth-tested, no sets.
+    {
+        VkShaderModule vert = loadShaderModule(device, "shaders/box_debug.vert", VK_SHADER_STAGE_VERTEX_BIT);
+        VkShaderModule frag = loadShaderModule(device, "shaders/box_debug.frag", VK_SHADER_STAGE_FRAGMENT_BIT);
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vert; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = frag; stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+        VkPipelineViewportStateCreateInfo vp{};
+        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{};
+        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        // No depth test: the box is a placement overlay, drawn on top so it stays
+        // visible even when its edges sit behind the room walls (the common case for
+        // an auto-fit box hugging the scene bounds).
+        VkPipelineDepthStencilStateCreateInfo ds{};
+        ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        ds.depthTestEnable = VK_FALSE; ds.depthWriteEnable = VK_FALSE;
+        ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{};
+        cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+        VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dyn{};
+        dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dyn.dynamicStateCount = 2; dyn.pDynamicStates = dynStates;
+
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pc.size = sizeof(BoxDebugPush);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.pushConstantRangeCount = 1; lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_boxDebugLayout));
+
+        VkFormat hdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+        VkPipelineRenderingCreateInfo rendering{};
+        rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        rendering.colorAttachmentCount = 1; rendering.pColorAttachmentFormats = &hdrFormat;
+        rendering.depthAttachmentFormat = depthFormat;
+        VkGraphicsPipelineCreateInfo gpi{};
+        gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        gpi.pNext = &rendering;
+        gpi.stageCount = 2; gpi.pStages = stages;
+        gpi.pVertexInputState = &vi; gpi.pInputAssemblyState = &ia;
+        gpi.pViewportState = &vp; gpi.pRasterizationState = &rs;
+        gpi.pMultisampleState = &ms; gpi.pDepthStencilState = &ds;
+        gpi.pColorBlendState = &cb; gpi.pDynamicState = &dyn;
+        gpi.layout = m_boxDebugLayout;
+        VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &m_boxDebugPipeline));
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+    }
 }
 
 void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D displayExtent,
@@ -1221,7 +1290,6 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     for (int k = 0; k < 2; k++) {
         add(m_fogScatterSet[k], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &froxelStore[k]);
         add(m_fogScatterSet[k], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &froxelSamp[1 - k]);
-        add(m_fogScatterSet[k], 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
     }
     // Integrate set[k]: reads scatter[k] (b0), writes integrated (b1).
     for (int k = 0; k < 2; k++) {
@@ -1334,6 +1402,8 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_ddgiPool) vkDestroyDescriptorPool(device, m_ddgiPool, nullptr);
     if (m_probeDebugPipeline) vkDestroyPipeline(device, m_probeDebugPipeline, nullptr);
     if (m_probeDebugLayout) vkDestroyPipelineLayout(device, m_probeDebugLayout, nullptr);
+    if (m_boxDebugPipeline) vkDestroyPipeline(device, m_boxDebugPipeline, nullptr);
+    if (m_boxDebugLayout) vkDestroyPipelineLayout(device, m_boxDebugLayout, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -1727,12 +1797,6 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                            VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
-            // directLight (.a = depth) written by resolve -> read by the depth cull.
-            imgBarrier(cmd, m_directLight.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
-                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
-
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogScatterPipeline);
             VkDescriptorSet sSets[2] = {scene.descriptorSet, m_fogScatterSet[fcur]};
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_fogScatterLayout,
@@ -1747,9 +1811,9 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                                settings.fogAnisotropy, settings.fogAmbient);
             sp.grid = grid;
             sp.zRange = glm::vec4(zn, zf, settings.fogTemporalAlpha, fogReset ? 1.0f : 0.0f);
-            sp.misc = glm::vec4(settings.fogJitter ? 1.0f : 0.0f,
-                                settings.fogDepthCull ? 1.0f : 0.0f,
-                                (float)extent.width, (float)extent.height);
+            sp.misc = glm::vec4(settings.fogJitter ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+            sp.boxMin = glm::vec4(settings.fogBoxMin, settings.fogBoxEnabled ? 1.0f : 0.0f);
+            sp.boxMax = glm::vec4(settings.fogBoxMax, settings.fogBoxEdge);
             vkCmdPushConstants(cmd, m_fogScatterLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(FogScatterPush), &sp);
             vkCmdDispatch(cmd, (m_froxelDim.width + 3) / 4, (m_froxelDim.height + 3) / 4,
@@ -1949,6 +2013,51 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                            0, sizeof(dpush), &dpush);
         uint32_t probeCount = (uint32_t)(m_ddgiCounts.x * m_ddgiCounts.y * m_ddgiCounts.z);
         vkCmdDraw(cmd, 60, probeCount, 0, 0); // 60 = icosahedron vertices
+        vkCmdEndRendering(cmd);
+        m_eng->cmdEndLabel(cmd);
+        hdrStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        hdrAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        hdrOld = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+
+    // ===================== Fog box debug viz (wireframe into HDR) =====================
+    if (settings.fogDebugBox) {
+        m_eng->cmdBeginLabel(cmd, "Fog Box Debug");
+        imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   hdrStage, hdrAccess,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                   hdrOld, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        imgBarrier(cmd, depthImage, VK_IMAGE_ASPECT_DEPTH_BIT,
+                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+        VkRenderingAttachmentInfo color{};
+        color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color.imageView = m_hdr.view;
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingAttachmentInfo depth{};
+        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth.imageView = depthView;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        VkRenderingInfo ri{};
+        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.renderArea.extent = extent; ri.layerCount = 1;
+        ri.colorAttachmentCount = 1; ri.pColorAttachments = &color;
+        ri.pDepthAttachment = &depth;
+        vkCmdBeginRendering(cmd, &ri);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_boxDebugPipeline);
+        BoxDebugPush bpush{jitteredVP, glm::vec4(settings.fogBoxMin, 0.0f),
+                           glm::vec4(settings.fogBoxMax, 0.0f)};
+        vkCmdPushConstants(cmd, m_boxDebugLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                           0, sizeof(bpush), &bpush);
+        vkCmdDraw(cmd, 24, 1, 0, 0); // 12 edges x 2 vertices
         vkCmdEndRendering(cmd);
         m_eng->cmdEndLabel(cmd);
         hdrStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;

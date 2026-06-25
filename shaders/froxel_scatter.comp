@@ -18,7 +18,6 @@ layout(set = 0, binding = 5) uniform accelerationStructureEXT topLevelAS;
 
 layout(rgba16f, set = 1, binding = 0) uniform writeonly image3D scatterOut;
 layout(set = 1, binding = 1) uniform sampler3D scatterPrev; // last frame's volume
-layout(rgba16f, set = 1, binding = 2) uniform readonly image2D directLight; // .a = surface depth
 
 layout(push_constant) uniform Push {
     mat4  invViewProj;   // unjittered, for froxel -> world
@@ -29,8 +28,22 @@ layout(push_constant) uniform Push {
     vec4  fog;           // x=density y=scatter z=anisotropy w=ambient
     uvec4 grid;          // xyz = froxel dims, w = frameIndex
     vec4  zRange;        // x=zn y=zf z=temporalAlpha w=reset
-    vec4  misc;          // x=jitterScale, y=depthCull, zw=screenSize
+    vec4  misc;          // x=jitterScale
+    vec4  boxMin;        // xyz = local fog box min ; w = enable (0/1)
+    vec4  boxMax;        // xyz = local fog box max ; w = edge softness (world units)
 } pc;
+
+// Density at world point P. When the local box is enabled, density is confined to
+// the box with a smoothstep falloff at the faces (no hard sis wall) and is 0 outside
+// -> looking past the box shows no fog, and froxels straddling a wall fade to ~0
+// there, killing the in/out interpolation leak. Box off = uniform global density.
+float fogDensityAt(vec3 P) {
+    if (pc.boxMin.w < 0.5) return pc.fog.x;
+    vec3 d = min(P - pc.boxMin.xyz, pc.boxMax.xyz - P); // >0 inside, per axis
+    float m = min(d.x, min(d.y, d.z));                 // signed dist to nearest face
+    float edge = max(pc.boxMax.w, 1e-4);
+    return pc.fog.x * smoothstep(0.0, edge, m);
+}
 
 void main() {
     ivec3 c = ivec3(gl_GlobalInvocationID);
@@ -55,7 +68,7 @@ void main() {
     float cosTheta = dot(-V, L);                     // view ray vs. light
     float phase = froxelHG(cosTheta, pc.fog.z);
 
-    float density = pc.fog.x;
+    float density = fogDensityAt(P);
     vec3  inScatter = density * pc.fog.y *
                       (pc.sunColor.rgb * vis * phase + vec3(pc.fog.w));
     float extinction = max(density, 1e-5);
@@ -76,23 +89,6 @@ void main() {
                 inScatter  = mix(hist.rgb, inScatter,  a);
                 extinction = mix(hist.a,   extinction, a);
             }
-        }
-    }
-
-    // ----- Soft depth occlusion (step 2, smoothed) -----
-    // Fade the froxel's in-scatter by the FRACTION of its depth extent that lies in
-    // front of the visible surface (center sample). Fully in front -> full light,
-    // fully behind -> 0, straddling -> partial. Continuous, so no chunky holes or
-    // pop when the camera moves; still kills light leaking behind walls.
-    if (pc.misc.y > 0.5) {
-        vec2 ss = pc.misc.zw;
-        ivec2 px = ivec2(clamp((vec2(c.xy) + 0.5) / vec2(dim.xy) * ss, vec2(0.0), ss - 1.0));
-        float d = imageLoad(directLight, px).a;            // surface view depth (0 = sky)
-        if (d > 0.0) {
-            float nearZ = froxelSliceToViewZ(float(c.z)        / float(dim.z), zn, zf);
-            float farZ  = froxelSliceToViewZ((float(c.z) + 1.0) / float(dim.z), zn, zf);
-            float frontFrac = clamp((d - nearZ) / max(farZ - nearZ, 1e-4), 0.0, 1.0);
-            inScatter *= frontFrac;
         }
     }
 

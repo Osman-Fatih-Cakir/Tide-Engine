@@ -195,10 +195,6 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
                               "Result: turns hard 0/1 shadow edges into soft penumbra.\n"
                               "On = smoother IF the view is steady, but adds shimmer while moving.\n"
                               "Off = perfectly stable but blocky (use Volume blur instead).");
-        ImGui::Checkbox("Depth cull (no leak)", &s.fogDepthCull);
-        ImGui::SetItemTooltip("Job: zeroes any froxel whose far face reaches past the visible surface.\n"
-                              "Result: light no longer leaks through walls/floor into shadowed areas.\n"
-                              "On = clean (errs to slightly less fog near surfaces). Off = leaks return.");
         ImGui::SliderInt("Blur radius", &s.fogBlurRadius, 0, 3);
         ImGui::SetItemTooltip("Job: deterministic NxNxN box blur of the froxel volume (N=2r+1).\n"
                               "Result: smooths blocky beams WITHOUT any motion/shimmer (unlike jitter).\n"
@@ -215,7 +211,7 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
         ImGui::SetItemTooltip("Job: Henyey-Greenstein g, the scattering directionality.\n"
                               "Result: how concentrated the glow is around the sun direction.\n"
                               "Higher (->1) = sharp forward beams (looking toward sun). 0 = uniform glow. Negative = back-scatter.");
-        ImGui::SliderFloat("Fog ambient", &s.fogAmbient,      0.0f, 0.5f, "%.3f");
+        ImGui::SliderFloat("Fog ambient", &s.fogAmbient,      0.0f, 0.2f, "%.3f");
         ImGui::SetItemTooltip("Job: constant in-scatter added to every froxel (sky fill in the medium).\n"
                               "Result: base haze even where the sun doesn't reach.\n"
                               "Higher = milky/foggy everywhere. Lower = only lit shafts show, shadows stay clear.");
@@ -227,6 +223,41 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
         ImGui::SetItemTooltip("Job: far extent of the froxel volume (world units); Z slices pack into this range.\n"
                               "Result: how far fog is computed.\n"
                               "Higher = fog reaches farther but coarser per-slice (more blocky far away). Lower = denser slices up close.");
+
+        ImGui::Checkbox("Local fog box", &s.fogBoxEnabled);
+        ImGui::SetItemTooltip("Job: confine fog density to a world-space box with a soft edge, instead\n"
+                              "of filling the whole scene.\n"
+                              "Result: no fog outside the box (looking out a window is clear), and froxels\n"
+                              "straddling a wall fade to ~0 there -> kills the in/out interpolation leak.\n"
+                              "Off = uniform global density (fog everywhere).");
+        if (s.fogBoxEnabled) {
+            ImGui::SliderFloat("Box edge softness", &s.fogBoxEdge, 0.0f, 3.0f, "%.2f");
+            ImGui::SetItemTooltip("Smoothstep falloff width at the box faces (world units).\n"
+                                  "Higher = gradual fade in/out at the box border (no hard fog wall).");
+            ImGui::Checkbox("Show fog box", &s.fogDebugBox);
+            ImGui::SetItemTooltip("Draws the fog box as a cyan wireframe so you can fit it to the room.");
+            ImGui::Checkbox("Manual box placement", &s.fogBoxManual);
+            ImGui::SetItemTooltip("Off = auto-fit the box to the scene bounds each frame.\n"
+                                  "On = place it by hand. Fit it inside the room walls so fog stops at them.");
+            ImGui::BeginDisabled(!s.fogBoxManual); // when auto, the engine drives these
+            float center[3] = {(s.fogBoxMin.x + s.fogBoxMax.x) * 0.5f,
+                               (s.fogBoxMin.y + s.fogBoxMax.y) * 0.5f,
+                               (s.fogBoxMin.z + s.fogBoxMax.z) * 0.5f};
+            float size[3]   = {s.fogBoxMax.x - s.fogBoxMin.x,
+                               s.fogBoxMax.y - s.fogBoxMin.y,
+                               s.fogBoxMax.z - s.fogBoxMin.z};
+            bool ch = false;
+            ch |= ImGui::DragFloat3("Box center", center, 0.05f);
+            ch |= ImGui::DragFloat3("Box size (XYZ)", size, 0.05f, 0.1f, 10000.0f);
+            if (ch) {
+                for (int i = 0; i < 3; i++) if (size[i] < 0.1f) size[i] = 0.1f;
+                s.fogBoxMin = glm::vec3(center[0] - size[0] * 0.5f, center[1] - size[1] * 0.5f,
+                                        center[2] - size[2] * 0.5f);
+                s.fogBoxMax = glm::vec3(center[0] + size[0] * 0.5f, center[1] + size[1] * 0.5f,
+                                        center[2] + size[2] * 0.5f);
+            }
+            ImGui::EndDisabled();
+        }
     }
 
     ImGui::SeparatorText("Global Illumination (DDGI)");

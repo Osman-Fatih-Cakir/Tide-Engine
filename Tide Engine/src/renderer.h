@@ -165,4 +165,8 @@ private:
     // DDGI sample set (UBO + irradiance). Only drawn when settings.giDebugProbes.
     VkPipeline       m_probeDebugPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_probeDebugLayout   = VK_NULL_HANDLE;
+    // Fog box debug viz: line-list wireframe of the local fog box, push-constant only
+    // (no descriptor set). Only drawn when settings.fogDebugBox.
+    VkPipeline       m_boxDebugPipeline   = VK_NULL_HANDLE;
+    VkPipelineLayout m_boxDebugLayout     = VK_NULL_HANDLE;
 };

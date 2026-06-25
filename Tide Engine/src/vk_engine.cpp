@@ -669,6 +669,12 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
                 m_settings.giGridMin = center - size * 0.5f;
                 m_settings.giGridMax = center + size * 0.5f;
             }
+            // Auto-fit the local fog box to the scene bounds unless placed by hand.
+            // Inset 0.2 world units per face so the box lands just inside the walls.
+            if (!m_settings.fogBoxManual) {
+                m_settings.fogBoxMin = m_scene.boundsMin + glm::vec3(0.2f);
+                m_settings.fogBoxMax = m_scene.boundsMax - glm::vec3(0.2f);
+            }
             ZoneScopedN("Renderer Record");
             bool dlssActive = m_dlss.available() && m_settings.dlssEnabled && m_dlss.hasFeature();
             m_settings.dlssAvailable = m_dlss.available();
@@ -919,7 +925,7 @@ void VulkanEngine::cmdEndLabel(VkCommandBuffer cmd) {
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint32_t kStateMagic   = 0x54494445u; // 'TIDE'
-constexpr uint32_t kStateVersion = 5u; // bump whenever the Settings struct layout changes
+constexpr uint32_t kStateVersion = 7u; // bump whenever the Settings struct layout changes
 struct StateBlob {
     uint32_t  magic, version;
     Settings  settings;

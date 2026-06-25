@@ -47,22 +47,31 @@ struct Settings {
     uint32_t displayW = 0, displayH = 0; // display resolution
 
     // Volumetric fog (Faz 7) — froxel-based, RT-shadowed god rays.
-    bool  fogEnabled      = false; // default off so density-0 path is a clean regression
+    bool  fogEnabled      = true;  // default off so density-0 path is a clean regression
     int   fogQuality      = 2;     // froxel grid preset (0..3); see fogGridDim() / UI labels
-    float fogDensity      = 0.04f; // extinction per world unit (higher = thicker)
+    float fogDensity      = 0.09f; // extinction per world unit (higher = thicker)
     float fogScatter      = 0.7f;  // in-scatter intensity (scattering albedo)
-    float fogAnisotropy   = 0.76f; // Henyey-Greenstein g (forward scattering -> beams)
+    float fogAnisotropy   = 0.0f;  // Henyey-Greenstein g (forward scattering -> beams)
     float fogAmbient      = 0.0f;  // ambient in-scatter (sky fill in the medium)
     float fogTemporalAlpha= 0.02f; // froxel temporal EMA (lower = smoother, more lag)
     float fogMaxDistance  = 20.0f; // far extent of the froxel volume (world units)
     bool  fogJitter       = true;  // per-froxel sample jitter (off = deterministic, blocky)
-    bool  fogDepthCull    = true;  // kill froxels not fully in front of the surface (no leak)
     int   fogBlurRadius   = 1;     // deterministic volume blur radius (0=off,1=3³,2=5³,3=7³)
+    // Local fog box: confine density to a world-space box (smooth edge) instead of
+    // filling the whole scene. Removes "everything is fog" outside the room and the
+    // straddle leak at walls. When fogBoxManual is off, the box auto-fits the scene
+    // bounds each frame (and the UI shows them); on = artist places it by hand.
+    bool  fogBoxEnabled = true;
+    bool  fogBoxManual  = false;
+    glm::vec3 fogBoxMin = glm::vec3(0.0f);
+    glm::vec3 fogBoxMax = glm::vec3(0.0f);
+    float fogBoxEdge    = 0.5f;     // smoothstep falloff width at the box faces (world units)
+    bool  fogDebugBox   = false;    // draw the fog box as a wireframe
 
     // Realtime GI — DDGI (Faz 8). World-space probe grid + octahedral irradiance/depth
     // atlas, sampled in resolve.comp to replace the flat ambient term.
-    bool  giEnabled    = false; // default off so giIntensity-0 path is a clean regression
-    float giIntensity  = 4.0f;  // indirect irradiance multiplier (0 = old flat ambient)
+    bool  giEnabled    = true; // default off so giIntensity-0 path is a clean regression
+    float giIntensity  = 2.0f;  // indirect irradiance multiplier (0 = old flat ambient)
     float giHysteresis = 0.988f; // probe temporal blend (higher = stabler, slower to react)
     int   giRaysPerProbe = 64;  // rays traced per probe per frame (<= 128)
     float giNormalBias = 0.15f; // shading-point offset along N (self-occlusion fix, world units)
