@@ -90,10 +90,11 @@ void main() {
         if (dot(Ng, Ns) < 0.0) Ng = -Ng; // point Ng the same way the artist intended
         if (dot(Ng, dir) > 0.0) {
             // Backface hit -> the probe is on the wrong side of this surface (behind a
-            // wall / outside the room). Emit no light and record a SHORTENED distance so
-            // the depth atlas reports a near occluder -> Chebyshev kills the leak. (RTXGI)
+            // wall / inside geometry). Emit no light and record a NEGATIVE (shortened)
+            // distance: |dist| feeds the depth atlas (near occluder), the sign lets the
+            // update pass count backfaces and classify the probe as inside-geometry. (RTXGI)
             radiance = vec3(0.0);
-            dist = t * 0.2;
+            dist = -(t * 0.2);
         } else {
             vec3 hitP = origin + dir * t;
             vec3 N = Ns;

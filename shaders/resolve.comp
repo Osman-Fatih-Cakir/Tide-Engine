@@ -77,9 +77,7 @@ layout(push_constant) uniform Push {
 
 #include "rtshadow.glsl"
 
-// DDGI helpers — included here so its ray-visibility path sees topLevelAS (declared
-// above in set 0). DDGI_HAS_TLAS enables the exact ray-traced probe visibility.
-#define DDGI_HAS_TLAS
+// DDGI helpers (probe grid math, octahedral atlas, irradiance sampling).
 #include "ddgi.glsl"
 
 // DDGI sample set (set 2): probe params + irradiance/depth atlases. Replaces the

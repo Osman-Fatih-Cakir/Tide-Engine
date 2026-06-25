@@ -44,7 +44,7 @@ The engine supports interchangeable, mutually exclusive denoisers to clean up th
 *   **World-Space Probe Grid:** A regular grid of irradiance probes wraps the scene; each probe traces rays into the TLAS to capture diffuse indirect light, replacing flat ambient with real sun bounces.
 *   **Octahedral Irradiance & Depth Atlases:** Per-probe irradiance and depth/moments are encoded octahedrally into shared atlases, sampled with trilinear + normal-aware weighting.
 *   **Multi-Bounce Feedback:** Probes re-sample the previous frame's irradiance at ray hits (RTXGI-style), so light energy accumulates over multiple bounces and naturally fills the room.
-*   **Leak-Free Visibility:** Exact ray-traced probe visibility (a short occlusion ray per contributing probe) eliminates light leaking through thin walls — no Chebyshev approximation required. Temporal hysteresis stabilizes the result.
+*   **Probe Classification (Leak-Free):** Probes that land inside or behind geometry are detected (via backface ray ratio) and excluded from interpolation, eliminating light leaks through thin walls with **zero per-pixel rays** — true to DDGI's amortized design. Combined with Chebyshev variance-depth visibility and temporal hysteresis.
 
 ### 🛠️ Developer Tools & Utilities
 *   **Real-time UI:** Immediate feedback and variable tweaking via integrated ImGui.

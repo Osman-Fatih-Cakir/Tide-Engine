@@ -160,4 +160,9 @@ private:
     VkDescriptorSetLayout m_ddgiSampleSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet       m_ddgiSampleSet       = VK_NULL_HANDLE;
     VkDescriptorPool      m_ddgiPool = VK_NULL_HANDLE;
+
+    // Probe debug viz: instanced icosahedron spheres (one per probe), reuses the
+    // DDGI sample set (UBO + irradiance). Only drawn when settings.giDebugProbes.
+    VkPipeline       m_probeDebugPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_probeDebugLayout   = VK_NULL_HANDLE;
 };

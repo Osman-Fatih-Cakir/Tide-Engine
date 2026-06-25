@@ -68,9 +68,14 @@ struct Settings {
     float giNormalBias = 0.15f; // shading-point offset along N (self-occlusion fix, world units)
     float giSkyIntensity = 1.0f; // sky/env contribution on ray miss (procedural sky uncalibrated)
     float giMultiBounce  = 1.0f; // multi-bounce feedback gain (1 = physical, >1 exaggerates)
-    bool  giRayVisibility = true; // exact ray-traced probe visibility (leak-free) vs Chebyshev (cheap)
     int   giProbesX = 16, giProbesY = 8, giProbesZ = 16; // grid resolution (recreate)
     bool  giDebugProbes = false; // visualize probes as shaded spheres
+    // Probe grid bounds. When giGridManual is off, the engine auto-fits these to the
+    // scene each frame (and the UI shows them); when on, the artist places the grid by
+    // hand (fit it inside the room to kill exterior-probe leak).
+    bool  giGridManual = false;
+    glm::vec3 giGridMin = glm::vec3(0.0f);
+    glm::vec3 giGridMax = glm::vec3(0.0f);
 
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 

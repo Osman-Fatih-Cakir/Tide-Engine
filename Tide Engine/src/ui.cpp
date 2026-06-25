@@ -255,10 +255,6 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
         ImGui::SliderFloat("Normal bias", &s.giNormalBias, 0.0f, 1.0f, "%.2f");
         ImGui::SetItemTooltip("Job: offsets the shading point along its normal before sampling probes.\n"
                               "Result: fixes self-occlusion (dark seams) at corners. Too high = light leaks.");
-        ImGui::Checkbox("Ray-traced visibility (no leak)", &s.giRayVisibility);
-        ImGui::SetItemTooltip("Job: how each probe's visibility to the pixel is tested.\n"
-                              "ON = exact short ray P->probe (any wall between = drop it). Zero leak, even through thin walls; costs a few rays/pixel.\n"
-                              "OFF = Chebyshev variance-depth (cheap, approximate, always leaks/over-darkens a bit). Use ON for correctness.");
         // Probe grid resolution: changing any axis rebuilds the atlases (recreateSwapchain).
         int probes[3] = {s.giProbesX, s.giProbesY, s.giProbesZ};
         if (ImGui::SliderInt3("Probes XYZ", probes, 2, 32)) {
@@ -266,6 +262,36 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
         }
         ImGui::SetItemTooltip("Job: world-space probe grid resolution (rebuilds the atlases).\n"
                               "Result: more probes = finer indirect detail + cost. The grid wraps the scene bounds.");
+
+        ImGui::Checkbox("Show probe grid", &s.giDebugProbes);
+        ImGui::SetItemTooltip("Draws each probe as a small sphere colored by its irradiance.\n"
+                              "Probes classified invalid (inside/behind geometry) show RED.\n"
+                              "Use it to see which probes sit OUTSIDE the room (the leak sources).");
+        ImGui::Checkbox("Manual grid placement", &s.giGridManual);
+        ImGui::SetItemTooltip("Off = auto-fit the grid to the scene bounds each frame.\n"
+                              "On = place the grid by hand. Fit it INSIDE the room walls so no probe\n"
+                              "sits in the empty exterior -> kills the dominant thin-wall leak.");
+        ImGui::BeginDisabled(!s.giGridManual); // when auto, the engine drives these
+        // Center + per-axis size (scale) — more intuitive than two corners.
+        float center[3] = {(s.giGridMin.x + s.giGridMax.x) * 0.5f,
+                           (s.giGridMin.y + s.giGridMax.y) * 0.5f,
+                           (s.giGridMin.z + s.giGridMax.z) * 0.5f};
+        float size[3]   = {s.giGridMax.x - s.giGridMin.x,
+                           s.giGridMax.y - s.giGridMin.y,
+                           s.giGridMax.z - s.giGridMin.z};
+        bool ch = false;
+        ch |= ImGui::DragFloat3("Grid center", center, 0.05f);
+        ch |= ImGui::DragFloat3("Grid size (XYZ)", size, 0.05f, 0.1f, 10000.0f);
+        if (ch) {
+            for (int i = 0; i < 3; i++) if (size[i] < 0.1f) size[i] = 0.1f;
+            s.giGridMin = glm::vec3(center[0] - size[0] * 0.5f, center[1] - size[1] * 0.5f,
+                                    center[2] - size[2] * 0.5f);
+            s.giGridMax = glm::vec3(center[0] + size[0] * 0.5f, center[1] + size[1] * 0.5f,
+                                    center[2] + size[2] * 0.5f);
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Grid center (world pos) + per-axis size. Shrink each axis to fit the\n"
+                              "grid inside the room walls; the spheres show where the probes land.");
     }
 
     ImGui::SeparatorText("Tonemap");

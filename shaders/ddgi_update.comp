@@ -13,7 +13,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(std140, set = 0, binding = 0) uniform DdgiUBO { DdgiParams ddgi; };
 layout(std430, set = 0, binding = 1) readonly buffer RayRadiance { vec4 rayResult[]; };
-layout(rgba16f, set = 0, binding = 2) uniform image2D irrAtlas;
+layout(rgba16f, set = 0, binding = 2) uniform image2D irrAtlas; // .a = probe validity
 layout(rg16f,   set = 0, binding = 3) uniform image2D depthAtlas;
 
 layout(push_constant) uniform Push { int mode; } pc;
@@ -42,22 +42,29 @@ void main() {
     float sumW = 0.0;
     vec3  accumColor = vec3(0.0);
     vec2  accumDepth = vec2(0.0); // mean, mean^2
+    int   back = 0;               // backface ray count (over the full sphere), for classification
     for (int r = 0; r < rays; r++) {
+        vec4 res4 = rayResult[probe * DDGI_MAX_RAYS + r];
+        if (res4.a < 0.0) back++; // backface hit (trace stored a negative distance)
         vec3 rd = ddgiRayDir(ddgi, r);
         float d = dot(texelDir, rd);
         if (d <= 0.0) continue;
-        vec4 res4 = rayResult[probe * DDGI_MAX_RAYS + r];
         if (pc.mode == 0) {
-            float w = d;
-            accumColor += res4.rgb * w;
-            sumW += w;
+            accumColor += res4.rgb * d;
+            sumW += d;
         } else {
             float w = pow(d, DEPTH_SHARPNESS);
-            float dist = min(res4.a, ddgi.shadowCfg.w);
+            float dist = min(abs(res4.a), ddgi.shadowCfg.w); // |.| : backface dist is negative
             accumDepth += vec2(dist, dist * dist) * w;
             sumW += w;
         }
     }
+
+    // Probe classification (RTXGI): a probe whose rays are mostly backfaces sits
+    // inside/behind geometry -> INVALID. Stored in the irradiance atlas alpha (same for
+    // every texel of the probe); the per-pixel lookup reads it and drops the probe.
+    // This kills thin-wall leak with ZERO extra per-pixel rays.
+    float valid = (float(back) / float(rays) > 0.25) ? 0.0 : 1.0;
 
     // Keep the previous value when no ray covered this texel's lobe this frame
     // (instead of resetting to 0 / maxDist, which would wreck the depth atlas -> leak).
@@ -65,7 +72,7 @@ void main() {
     if (pc.mode == 0) {
         vec3 prev = imageLoad(irrAtlas, texel).rgb;
         vec3 result = (sumW > 1e-6) ? accumColor / sumW : prev;
-        imageStore(irrAtlas, texel, vec4(mix(result, prev, hys), 1.0));
+        imageStore(irrAtlas, texel, vec4(mix(result, prev, hys), valid)); // alpha = validity
     } else {
         vec2 prev = imageLoad(depthAtlas, texel).rg;
         vec2 result = (sumW > 1e-6) ? accumDepth / sumW : prev;

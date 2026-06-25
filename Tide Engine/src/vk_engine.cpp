@@ -657,6 +657,14 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
             glm::mat4 view = m_camera.view();
             glm::mat4 proj = m_camera.proj(aspect);
             glm::mat4 viewProj = proj * view;
+            // Auto-fit the DDGI probe grid to the scene bounds (5% pad) unless the
+            // artist is placing it by hand. Written to Settings so the UI can show it.
+            if (!m_settings.giGridManual) {
+                glm::vec3 ext = m_scene.boundsMax - m_scene.boundsMin;
+                glm::vec3 pad = ext * 0.05f + glm::vec3(0.01f);
+                m_settings.giGridMin = m_scene.boundsMin - pad;
+                m_settings.giGridMax = m_scene.boundsMax + pad;
+            }
             ZoneScopedN("Renderer Record");
             bool dlssActive = m_dlss.available() && m_settings.dlssEnabled && m_dlss.hasFeature();
             m_settings.dlssAvailable = m_dlss.available();
@@ -907,7 +915,7 @@ void VulkanEngine::cmdEndLabel(VkCommandBuffer cmd) {
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint32_t kStateMagic   = 0x54494445u; // 'TIDE'
-constexpr uint32_t kStateVersion = 1u;
+constexpr uint32_t kStateVersion = 3u; // bump whenever the Settings struct layout changes
 struct StateBlob {
     uint32_t  magic, version;
     Settings  settings;

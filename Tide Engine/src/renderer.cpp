@@ -109,6 +109,7 @@ struct DdgiParams {                 // matches the DdgiParams UBO in ddgi.glsl (
     glm::vec4  misc;               // x = use GI in resolve (0/1)
 };
 struct DdgiUpdatePush { int mode; }; // 0 = irradiance atlas, 1 = depth atlas
+struct ProbeDebugPush { glm::mat4 viewProj; float radius; };
 
 // ---------------------------------------------------------------------------
 // Small helpers.
@@ -338,11 +339,14 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     }
     {
         // Sample set (resolve set2): b0 UBO, b1 irradiance (sampler), b2 depth (sampler).
+        // Also used by the probe debug pipeline (vertex reads b0, fragment b0+b1).
         VkDescriptorSetLayoutBinding b[3]{};
         b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        for (int i = 0; i < 3; i++) { b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+        for (int i = 0; i < 3; i++) { b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT |
+                              VK_SHADER_STAGE_FRAGMENT_BIT; }
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         lci.bindingCount = 3; lci.pBindings = b;
@@ -949,6 +953,73 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_ddgiUpdatePipeline));
         vkDestroyShaderModule(device, comp, nullptr);
     }
+    // Probe debug pipeline: instanced icosahedron spheres into HDR, depth-tested.
+    {
+        VkShaderModule vert = loadShaderModule(device, "shaders/probe_debug.vert", VK_SHADER_STAGE_VERTEX_BIT);
+        VkShaderModule frag = loadShaderModule(device, "shaders/probe_debug.frag", VK_SHADER_STAGE_FRAGMENT_BIT);
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vert; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = frag; stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo vi{}; // no vertex buffers (generated in VS)
+        vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        VkPipelineInputAssemblyStateCreateInfo ia{};
+        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{};
+        vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{};
+        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo ds{};
+        ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        ds.depthTestEnable = VK_TRUE; ds.depthWriteEnable = VK_TRUE;
+        ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{};
+        cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+        VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dyn{};
+        dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dyn.dynamicStateCount = 2; dyn.pDynamicStates = dynStates;
+
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pc.size = sizeof(ProbeDebugPush);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 1; lci.pSetLayouts = &m_ddgiSampleSetLayout;
+        lci.pushConstantRangeCount = 1; lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_probeDebugLayout));
+
+        VkFormat hdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+        VkPipelineRenderingCreateInfo rendering{};
+        rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        rendering.colorAttachmentCount = 1; rendering.pColorAttachmentFormats = &hdrFormat;
+        rendering.depthAttachmentFormat = depthFormat;
+        VkGraphicsPipelineCreateInfo gpi{};
+        gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        gpi.pNext = &rendering;
+        gpi.stageCount = 2; gpi.pStages = stages;
+        gpi.pVertexInputState = &vi; gpi.pInputAssemblyState = &ia;
+        gpi.pViewportState = &vp; gpi.pRasterizationState = &rs;
+        gpi.pMultisampleState = &ms; gpi.pDepthStencilState = &ds;
+        gpi.pColorBlendState = &cb; gpi.pDynamicState = &dyn;
+        gpi.layout = m_probeDebugLayout;
+        VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &m_probeDebugPipeline));
+        vkDestroyShaderModule(device, vert, nullptr);
+        vkDestroyShaderModule(device, frag, nullptr);
+    }
 }
 
 void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D displayExtent,
@@ -1261,6 +1332,8 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_ddgiUpdateSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiUpdateSetLayout, nullptr);
     if (m_ddgiSampleSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiSampleSetLayout, nullptr);
     if (m_ddgiPool) vkDestroyDescriptorPool(device, m_ddgiPool, nullptr);
+    if (m_probeDebugPipeline) vkDestroyPipeline(device, m_probeDebugPipeline, nullptr);
+    if (m_probeDebugLayout) vkDestroyPipelineLayout(device, m_probeDebugLayout, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -1399,10 +1472,10 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
     // resolve sampling) so the GI-off path stays a clean regression.
     bool giOn = settings.giEnabled && !settings.debugMotionVecs;
     {
-        glm::vec3 bmin = scene.boundsMin, bmax = scene.boundsMax;
-        glm::vec3 ext = bmax - bmin;
-        glm::vec3 pad = ext * 0.05f + glm::vec3(0.01f);
-        glm::vec3 omin = bmin - pad, omax = bmax + pad;
+        // Grid bounds come from Settings (auto-fit to scene by the engine, or placed by
+        // hand when giGridManual). origin = min, spacing spans min..max over the probes.
+        glm::vec3 omin = settings.giGridMin, omax = settings.giGridMax;
+        glm::vec3 ext = omax - omin;
         glm::vec3 spacing(1.0f);
         for (int i = 0; i < 3; i++)
             spacing[i] = (m_ddgiCounts[i] > 1) ? (omax[i] - omin[i]) / float(m_ddgiCounts[i] - 1)
@@ -1420,10 +1493,9 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                                    settings.giIntensity, settings.giNormalBias,
                                    (float)(frame & 0xFFFF));
         dp.shadowCfg   = glm::vec4(0.0f, 0.0f, settings.shadowsEnabled ? 1.0f : 0.0f, maxDist);
-        // misc: x = use GI in resolve, y = sky GI strength, z = multi-bounce gain,
-        //       w = exact ray-traced probe visibility (1) vs Chebyshev (0).
+        // misc: x = use GI in resolve, y = sky GI strength, z = multi-bounce gain.
         dp.misc        = glm::vec4(giOn ? 1.0f : 0.0f, settings.giSkyIntensity,
-                                   settings.giMultiBounce, settings.giRayVisibility ? 1.0f : 0.0f);
+                                   settings.giMultiBounce, 0.0f);
         memcpy(m_ddgiUbo.mapped, &dp, sizeof(dp));
 
         if (giOn) {
@@ -1830,6 +1902,58 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         hdrStage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         hdrAccess = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         hdrOld = VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    // ===================== Probe debug viz (instanced spheres into HDR) =====================
+    if (settings.giDebugProbes) {
+        m_eng->cmdBeginLabel(cmd, "DDGI Probe Debug");
+        // HDR -> color attachment (from whatever its current state is).
+        imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   hdrStage, hdrAccess,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                   hdrOld, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        imgBarrier(cmd, depthImage, VK_IMAGE_ASPECT_DEPTH_BIT,
+                   VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+        VkRenderingAttachmentInfo color{};
+        color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color.imageView = m_hdr.view;
+        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingAttachmentInfo depth{};
+        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth.imageView = depthView;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        VkRenderingInfo ri{};
+        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.renderArea.extent = extent; ri.layerCount = 1;
+        ri.colorAttachmentCount = 1; ri.pColorAttachments = &color;
+        ri.pDepthAttachment = &depth;
+        vkCmdBeginRendering(cmd, &ri);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_probeDebugPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_probeDebugLayout,
+                                0, 1, &m_ddgiSampleSet, 0, nullptr);
+        glm::vec3 gext = settings.giGridMax - settings.giGridMin;
+        float minSp = 1e9f;
+        for (int i = 0; i < 3; i++)
+            if (m_ddgiCounts[i] > 1) minSp = std::min(minSp, gext[i] / float(m_ddgiCounts[i] - 1));
+        ProbeDebugPush dpush{jitteredVP, (minSp < 1e9f ? minSp : 1.0f) * 0.15f};
+        vkCmdPushConstants(cmd, m_probeDebugLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(dpush), &dpush);
+        uint32_t probeCount = (uint32_t)(m_ddgiCounts.x * m_ddgiCounts.y * m_ddgiCounts.z);
+        vkCmdDraw(cmd, 60, probeCount, 0, 0); // 60 = icosahedron vertices
+        vkCmdEndRendering(cmd);
+        m_eng->cmdEndLabel(cmd);
+        hdrStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        hdrAccess = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        hdrOld = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
 
     // ===================== Pass D0: DLSS upscale (render-res HDR -> display-res) =====================
