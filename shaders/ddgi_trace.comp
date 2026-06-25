@@ -89,10 +89,10 @@ void main() {
         vec3 Ng = normalize(cross(wp1 - wp0, wp2 - wp0));
         if (dot(Ng, Ns) < 0.0) Ng = -Ng; // point Ng the same way the artist intended
         if (dot(Ng, dir) > 0.0) {
-            // Backface hit -> the probe is on the wrong side of this surface (behind a
-            // wall / inside geometry). Emit no light and record a NEGATIVE (shortened)
-            // distance: |dist| feeds the depth atlas (near occluder), the sign lets the
-            // update pass count backfaces and classify the probe as inside-geometry. (RTXGI)
+            // Backface hit: the probe is on the wrong side of this surface (behind a
+            // wall / inside geometry). Emit no light and record a NEGATIVE, shortened
+            // distance: the magnitude feeds the depth atlas as a near occluder, and the
+            // sign lets the update pass count backfaces to classify the probe.
             radiance = vec3(0.0);
             dist = -(t * 0.2);
         } else {
@@ -116,7 +116,7 @@ void main() {
                 vis = 1.0;
             radiance = albedo / DDGI_PI * ddgi.sunColor.rgb * ndl * vis;
             // Multi-bounce: re-emit the previous frame's indirect irradiance arriving at
-            // the hit (misc.z = gain). AAA/RTXGI feedback -> the room fills up naturally.
+            // the hit (misc.z = gain), so light accumulates over successive bounces.
             if (ddgi.misc.z > 0.0)
                 radiance += albedo * ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, hitP, N)
                           * ddgi.misc.z;

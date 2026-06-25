@@ -113,15 +113,13 @@ vec3 ddgiSampleIrradiance(sampler2D irrAtlas, sampler2D depthAtlas,
         float wDir = max(dot(dirToProbe, N) * 0.5 + 0.5, 0.0);
         wDir *= wDir;
 
-        // Chebyshev visibility (depth atlas stores mean, mean^2 of ray distance).
-        // Softened vs reference RTXGI (v^2 not v^3, larger variance floor, a small
-        // depth bias) so it kills genuine leaks without zeroing valid contributions.
-        // Pre-cull negligible probes.
+        // Skip probes whose interpolation weight is negligible.
         float wpre = trilinear * wDir;
         if (wpre < 1e-3) continue;
 
-        // Chebyshev (variance-depth) visibility — per-pixel cost is ZERO rays (texture
-        // lookup only), the way DDGI is meant to work.
+        // Chebyshev (variance-depth) visibility: the depth atlas stores the mean and
+        // mean-squared ray distance, giving a soft estimate of how visible the probe is
+        // from the shading point. Suppresses light leaking across occluders.
         vec3  pToProbe = biasP - pp;
         float dist = length(pToProbe);
         vec2  mom  = texture(depthAtlas, ddgiAtlasUV(p, c, normalize(pToProbe), DDGI_DEPTH_RES)).rg;
@@ -129,10 +127,10 @@ vec3 ddgiSampleIrradiance(sampler2D irrAtlas, sampler2D depthAtlas,
         float varr = max(mom.y - mean * mean, 2e-3);
         float cheb = 1.0;
         if (dist > mean) { float d = dist - mean; cheb = varr / (varr + d * d); cheb = cheb*cheb*cheb; }
-        if (cheb < 0.2) cheb *= cheb * cheb / 0.04; // crush residual leak
+        if (cheb < 0.2) cheb *= cheb * cheb / 0.04; // sharpen the cutoff for low visibility
 
-        // .a = probe validity from classification (0 = probe inside/behind geometry).
-        // Dropping invalid probes is the main leak fix — also ZERO per-pixel rays.
+        // Atlas alpha holds the probe's validity (0 = probe sits inside/behind geometry);
+        // invalid probes are dropped so they don't leak light.
         vec4  irr = texture(irrAtlas, ddgiAtlasUV(p, c, N, DDGI_IRR_RES));
         float w = wpre * cheb * irr.a;
         sumIrr += irr.rgb * w;

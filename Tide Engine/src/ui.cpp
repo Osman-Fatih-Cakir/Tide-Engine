@@ -237,15 +237,14 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     if (s.giEnabled) {
         ImGui::SliderFloat("GI intensity (1=physical)", &s.giIntensity, 0.0f, 8.0f, "%.2f");
         ImGui::SetItemTooltip("Job: master multiplier on the indirect irradiance (the indirect-vs-direct ratio).\n"
-                              "Result: strength of bounce lighting. 1 = physically correct; >1 = exaggerate GI (common in AAA).\n"
+                              "Result: strength of bounce lighting. 1 = physically correct; >1 = exaggerate.\n"
                               "This sets the RELATIVE level; use Exposure for absolute brightness.");
         ImGui::SliderFloat("Sky GI strength", &s.giSkyIntensity, 0.0f, 4.0f, "%.2f");
         ImGui::SetItemTooltip("Job: how strongly the sky (seen through windows on ray miss) lights the scene.\n"
                               "Result: cool fill from the window/sky. Free knob — the procedural sky isn't calibrated.");
         ImGui::SliderFloat("Multi-bounce gain", &s.giMultiBounce, 0.0f, 2.0f, "%.2f");
         ImGui::SetItemTooltip("Job: feedback of the previous frame's indirect into each probe ray's hit (extra bounces).\n"
-                              "Result: the room fills up naturally (energy accumulates). 1 = physical, 0 = single bounce only, >1 = exaggerate.\n"
-                              "This is the AAA/RTXGI way to brighten GI without faking a flat ambient.");
+                              "Result: the scene fills up naturally as energy accumulates. 1 = physical, 0 = single bounce only, >1 = exaggerate.");
         ImGui::SliderFloat("Hysteresis", &s.giHysteresis, 0.5f, 0.995f, "%.3f");
         ImGui::SetItemTooltip("Job: probe temporal blend (keeps this fraction of the previous frame).\n"
                               "Result: higher = stabler/less noise but slower to react to sun moves. Lower = responsive but noisier.");

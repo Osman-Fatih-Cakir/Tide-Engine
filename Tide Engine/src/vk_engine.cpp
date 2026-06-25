@@ -657,16 +657,13 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
             glm::mat4 view = m_camera.view();
             glm::mat4 proj = m_camera.proj(aspect);
             glm::mat4 viewProj = proj * view;
-            // Auto-fit the DDGI probe grid to the scene bounds (5% pad) unless the
-            // artist is placing it by hand. Written to Settings so the UI can show it.
+            // Auto-fit the DDGI probe grid to the scene bounds unless the artist is
+            // placing it by hand. Written to Settings so the UI can show the values.
             if (!m_settings.giGridManual) {
                 glm::vec3 ext    = m_scene.boundsMax - m_scene.boundsMin;
                 glm::vec3 center = (m_scene.boundsMin + m_scene.boundsMax) * 0.5f;
-                // Per-axis fit factor: shrink the grid so the OUTER probes land inside
-                // the room walls instead of poking through them. Tuned on the office
-                // scene; the vertical (Y) axis needs more shrink from room proportions,
-                // NOT probe count — outer probes always sit on the box edges regardless
-                // of count, so these ratios hold for any giProbesXYZ.
+                // Shrink slightly so the outermost probes land inside the bounds rather
+                // than exactly on the surfaces, which reduces light leaking.
                 const glm::vec3 fit(0.8f, 0.8f, 0.8f);
                 glm::vec3 size = ext * fit;
                 m_settings.giGridMin = center - size * 0.5f;

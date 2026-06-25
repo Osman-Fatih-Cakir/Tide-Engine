@@ -18,9 +18,9 @@ layout(rg16f,   set = 0, binding = 3) uniform image2D depthAtlas;
 
 layout(push_constant) uniform Push { int mode; } pc;
 
-// Lower than the RTXGI default (50): with a modest ray count, a wide cone gives each
-// depth texel coverage from several rays, so the mean reliably captures near occluders
-// (thin walls) instead of latching onto one stray ray that missed the wall.
+// Cosine power for the depth gather. A wide cone gives each depth texel coverage from
+// several rays, so the mean reliably captures near occluders (thin walls) instead of
+// latching onto a single stray ray.
 const float DEPTH_SHARPNESS = 8.0;
 
 void main() {
@@ -60,10 +60,10 @@ void main() {
         }
     }
 
-    // Probe classification (RTXGI): a probe whose rays are mostly backfaces sits
-    // inside/behind geometry -> INVALID. Stored in the irradiance atlas alpha (same for
-    // every texel of the probe); the per-pixel lookup reads it and drops the probe.
-    // This kills thin-wall leak with ZERO extra per-pixel rays.
+    // Probe classification: a probe whose rays are mostly backfaces sits inside/behind
+    // geometry and is marked invalid. The flag is stored in the irradiance atlas alpha
+    // (the same for every texel of the probe) and read by the per-pixel lookup, which
+    // drops invalid probes to prevent light leaking.
     float valid = (float(back) / float(rays) > 0.25) ? 0.0 : 1.0;
 
     // Keep the previous value when no ray covered this texel's lobe this frame
