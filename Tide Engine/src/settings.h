@@ -13,9 +13,9 @@ struct Settings {
     float sunElevationMin = 18.0f;
     float sunElevationMax = 40.0f;
     float sunAnimSpeed    = 0.2f;   // radians/sec of the sweep phase (lower = slower)
-    float ambient         = 0.33f;
+    float ambient         = 0.0f;
     float sunIntensity    = 4.0f;  // directional sun radiance multiplier
-    float exposure        = 1.0f;  // tonemap exposure
+    float exposure        = 30.0f;  // tonemap exposure (manual)
 
     // Shadows (ray traced).
     bool  shadowsEnabled  = true;
@@ -62,11 +62,11 @@ struct Settings {
     // Realtime GI — DDGI (Faz 8). World-space probe grid + octahedral irradiance/depth
     // atlas, sampled in resolve.comp to replace the flat ambient term.
     bool  giEnabled    = false; // default off so giIntensity-0 path is a clean regression
-    float giIntensity  = 1.0f;  // indirect irradiance multiplier (0 = old flat ambient)
-    float giHysteresis = 0.97f; // probe temporal blend (higher = stabler, slower to react)
+    float giIntensity  = 4.0f;  // indirect irradiance multiplier (0 = old flat ambient)
+    float giHysteresis = 0.988f; // probe temporal blend (higher = stabler, slower to react)
     int   giRaysPerProbe = 64;  // rays traced per probe per frame (<= 128)
     float giNormalBias = 0.15f; // shading-point offset along N (self-occlusion fix, world units)
-    float giSkyIntensity = 1.0f; // sky/env contribution on ray miss (procedural sky uncalibrated)
+    float giSkyIntensity = 2.0f; // sky/env contribution on ray miss (procedural sky uncalibrated)
     float giMultiBounce  = 1.0f; // multi-bounce feedback gain (1 = physical, >1 exaggerates)
     int   giProbesX = 16, giProbesY = 8, giProbesZ = 16; // grid resolution (recreate)
     bool  giDebugProbes = false; // visualize probes as shaded spheres

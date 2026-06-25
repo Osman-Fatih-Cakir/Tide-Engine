@@ -98,7 +98,7 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 10.0f,
                                    vp->WorkPos.y + 10.0f),
                             ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(240.0f, 800.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(400.0f, 800.0f), ImGuiCond_Always);
 
     ImGui::Begin("Tide Engine", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
@@ -295,7 +295,7 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     }
 
     ImGui::SeparatorText("Tonemap");
-    ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 20.0f);
+    ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 200.0f);
     ImGui::PopItemWidth();
     ImGui::End();
 

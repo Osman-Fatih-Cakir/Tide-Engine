@@ -660,10 +660,17 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
             // Auto-fit the DDGI probe grid to the scene bounds (5% pad) unless the
             // artist is placing it by hand. Written to Settings so the UI can show it.
             if (!m_settings.giGridManual) {
-                glm::vec3 ext = m_scene.boundsMax - m_scene.boundsMin;
-                glm::vec3 pad = ext * 0.05f + glm::vec3(0.01f);
-                m_settings.giGridMin = m_scene.boundsMin - pad;
-                m_settings.giGridMax = m_scene.boundsMax + pad;
+                glm::vec3 ext    = m_scene.boundsMax - m_scene.boundsMin;
+                glm::vec3 center = (m_scene.boundsMin + m_scene.boundsMax) * 0.5f;
+                // Per-axis fit factor: shrink the grid so the OUTER probes land inside
+                // the room walls instead of poking through them. Tuned on the office
+                // scene; the vertical (Y) axis needs more shrink from room proportions,
+                // NOT probe count — outer probes always sit on the box edges regardless
+                // of count, so these ratios hold for any giProbesXYZ.
+                const glm::vec3 fit(0.8f, 0.8f, 0.8f);
+                glm::vec3 size = ext * fit;
+                m_settings.giGridMin = center - size * 0.5f;
+                m_settings.giGridMax = center + size * 0.5f;
             }
             ZoneScopedN("Renderer Record");
             bool dlssActive = m_dlss.available() && m_settings.dlssEnabled && m_dlss.hasFeature();
@@ -915,7 +922,7 @@ void VulkanEngine::cmdEndLabel(VkCommandBuffer cmd) {
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint32_t kStateMagic   = 0x54494445u; // 'TIDE'
-constexpr uint32_t kStateVersion = 3u; // bump whenever the Settings struct layout changes
+constexpr uint32_t kStateVersion = 5u; // bump whenever the Settings struct layout changes
 struct StateBlob {
     uint32_t  magic, version;
     Settings  settings;
