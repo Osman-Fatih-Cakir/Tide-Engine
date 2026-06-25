@@ -295,7 +295,7 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     }
 
     ImGui::SeparatorText("Tonemap");
-    ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 5.0f);
+    ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 20.0f);
     ImGui::PopItemWidth();
     ImGui::End();
 
