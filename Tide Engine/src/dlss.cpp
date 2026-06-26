@@ -61,17 +61,19 @@ bool Dlss::init(VkInstance instance, VkPhysicalDevice phys, VkDevice device) {
         NVSDK_NGX_VULKAN_Shutdown1(device);
         return false;
     }
+    // We use DLSS Ray Reconstruction (DLSS-D), so query the denoising capability,
+    // not the plain Super Resolution one.
     int supported = 0;
-    NVSDK_NGX_Parameter_GetI(m_params, NVSDK_NGX_Parameter_SuperSampling_Available, &supported);
+    NVSDK_NGX_Parameter_GetI(m_params, NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &supported);
     if (!supported) {
         int initResult = 0;
-        NVSDK_NGX_Parameter_GetI(m_params, NVSDK_NGX_Parameter_SuperSampling_FeatureInitResult, &initResult);
-        TE_WARN("DLSS: not available on this GPU/driver (initResult 0x%08x)\n", initResult);
+        NVSDK_NGX_Parameter_GetI(m_params, NVSDK_NGX_Parameter_SuperSamplingDenoising_FeatureInitResult, &initResult);
+        TE_WARN("DLSS Ray Reconstruction: not available on this GPU/driver (initResult 0x%08x)\n", initResult);
         NVSDK_NGX_VULKAN_Shutdown1(device);
         return false;
     }
     m_available = true;
-    TE_INFO("DLSS: available\n");
+    TE_INFO("DLSS Ray Reconstruction: available\n");
     return true;
 }
 
