@@ -10,7 +10,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(rgba16f, set = 0, binding = 0) uniform readonly  image2D directLightImage;
-layout(r16f,    set = 0, binding = 1) uniform readonly  image2D shadowImage;
+layout(rg16f,   set = 0, binding = 1) uniform readonly  image2D shadowImage; // r=shadow, g=ao
 layout(rgba16f, set = 0, binding = 2) uniform           image2D hdrImage; // read ambient, write final
 
 layout(push_constant) uniform Push { uvec2 screenSize; } pc;
@@ -21,7 +21,8 @@ void main() {
 
     vec3  ambient = imageLoad(hdrImage, pix).rgb;
     vec3  direct  = imageLoad(directLightImage, pix).rgb;
-    float shadow  = imageLoad(shadowImage, pix).r;
+    vec2  sh      = imageLoad(shadowImage, pix).rg; // r=shadow, g=ao
 
-    imageStore(hdrImage, pix, vec4(ambient + direct * shadow, 1.0));
+    // AO occludes the ambient/indirect term only; direct sun keeps its RT shadow.
+    imageStore(hdrImage, pix, vec4(ambient * sh.g + direct * sh.r, 1.0));
 }

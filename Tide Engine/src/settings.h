@@ -32,6 +32,15 @@ struct Settings {
     float svgfPhiNormal     = 64.0f;// normal edge-stop sharpness (higher = more edge-preserving)
     float svgfPhiDepth      = 1.0f; // depth edge-stop tolerance (lower = more edge-preserving)
 
+    // Ambient Occlusion (Faz 9) — ray-traced AO against the scene TLAS. Modulates the
+    // ambient/indirect term only (composite: hdr = ambient*ao + direct*shadow).
+    // Shares the shadow denoise stack (temporal + à-trous), so few samples suffice.
+    bool  aoEnabled   = true;   // off => ao=1.0 (clean regression vs Faz 8)
+    int   aoSamples   = 4;      // cosine-weighted hemisphere rays per pixel
+    float aoRadius    = 0.6f;   // world-space max occluder distance
+    float aoIntensity = 1.0f;   // strength (0 = no effect, >1 exaggerates)
+    float aoBias      = 0.02f;  // ray origin offset along N (self-occlusion fix, world units)
+
     // TAA / DLSS pipeline foundation (Faz 6.5 Aşama A).
     bool  taaJitter       = false;  // sub-pixel Halton jitter — auto-forced on when DLSS is active
     bool  debugMotionVecs = false;  // show motion vectors instead of shaded color

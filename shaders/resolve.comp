@@ -51,8 +51,8 @@ layout(std430, set = 0, binding = 6) readonly buffer Geometries { GpuGeometry ge
 // ----- Resolve set (set 1) -----
 layout(r32ui, set = 1, binding = 0) uniform readonly uimage2D visImage;
 layout(rgba16f, set = 1, binding = 1) uniform writeonly image2D hdrImage;
-layout(set = 1, binding = 2) uniform sampler2D shadowHistRead;     // R=visibility, G=linear depth
-layout(rg16f, set = 1, binding = 3) uniform writeonly image2D shadowHistWrite;
+layout(set = 1, binding = 2) uniform sampler2D shadowHistRead;     // R=visibility, G=linear depth, B=ao
+layout(rgba16f, set = 1, binding = 3) uniform writeonly image2D shadowHistWrite;
 layout(rg16f, set = 1, binding = 4) uniform writeonly image2D motionImage; // prevUV - curUV (for DLSS)
 // Ray Reconstruction guide buffers (always written; consumed only when RR active).
 layout(rgba16f, set = 1, binding = 5) uniform writeonly image2D diffuseImage;  // diffuse albedo
@@ -61,7 +61,7 @@ layout(rgba16f, set = 1, binding = 7) uniform writeonly image2D normalImage;   /
 // Deferred shadow split (SVGF): direct sun radiance WITHOUT shadow, + shadow scalar.
 // The composite pass recombines: hdr = ambient + directLight * shadow(filtered).
 layout(rgba16f, set = 1, binding = 8) uniform writeonly image2D directLightImage;
-layout(r16f,    set = 1, binding = 9) uniform writeonly image2D shadowOutImage;
+layout(rg16f,   set = 1, binding = 9) uniform writeonly image2D shadowOutImage; // r=shadow, g=ao
 
 layout(push_constant) uniform Push {
     mat4  viewProj;
@@ -72,6 +72,7 @@ layout(push_constant) uniform Push {
     vec4  shadowCfg;     // x=sunConeRad y=samples z=shadowsOn w=frameIndex
     vec4  temporal;      // x=reset y=histAlpha z=denoiseOn
     vec4  jitter;        // xy = jitter NDC, z = debugMotion flag, w = mip LOD bias
+    vec4  ao;            // x=samples(0=off) y=radius z=intensity w=bias
     uvec2 screenSize;
 } pc;
 
@@ -111,13 +112,13 @@ void main() {
         vec3 rayDir = normalize(farP.xyz / farP.w - pc.cameraPos.xyz);
         vec3 sky = skyColor(rayDir, normalize(pc.sunDir.xyz));
         imageStore(hdrImage, pix, vec4(sky, 1.0));
-        imageStore(shadowHistWrite, pix, vec4(1.0, 1e6, 0.0, 0.0)); // lit + far depth
+        imageStore(shadowHistWrite, pix, vec4(1.0, 1e6, 1.0, 0.0)); // lit + far depth + ao open
         imageStore(motionImage, pix, vec4(0.0));                    // sky: no motion
         imageStore(diffuseImage, pix, vec4(0.0));                   // RR guides: empty
         imageStore(specularImage, pix, vec4(0.0));
         imageStore(normalImage, pix, vec4(0.0, 0.0, 0.0, 1.0));
         imageStore(directLightImage, pix, vec4(0.0));               // composite: ambient(sky)+0
-        imageStore(shadowOutImage, pix, vec4(1.0));
+        imageStore(shadowOutImage, pix, vec4(1.0, 1.0, 0.0, 0.0));  // shadow=1, ao=1 (sky)
         if (pc.jitter.z > 0.5) imageStore(hdrImage, pix, vec4(0.5, 0.5, 0.0, 1.0));
         return;
     }
@@ -229,21 +230,33 @@ void main() {
         shadow = traceSunShadow(worldPos, N, L, pc.shadowCfg.x,
                                 int(pc.shadowCfg.y), uint(pc.shadowCfg.w), vec2(pix));
 
-    // ----- Temporal accumulation (reproject last frame's shadow) -----
+    // ----- Ray-traced ambient occlusion (Faz 9) -----
+    // Modulates the ambient/indirect term only; applied in the composite pass. ao.x=0
+    // disables (=> ao=1, clean regression). intensity (ao.z) pushes occlusion harder.
+    float rtao = 1.0;
+    if (pc.ao.x > 0.5) {
+        float vis = traceAO(worldPos, N, pc.ao.y, pc.ao.w, int(pc.ao.x),
+                            uint(pc.shadowCfg.w), vec2(pix));
+        rtao = clamp(1.0 - (1.0 - vis) * pc.ao.z, 0.0, 1.0);
+    }
+
+    // ----- Temporal accumulation (reproject last frame's shadow + AO) -----
     float curW = (pc.viewProj * vec4(worldPos, 1.0)).w; // linear depth proxy (clip w)
     {
         vec4 pc4 = pc.prevViewProj * vec4(worldPos, 1.0);
         if (pc.temporal.z > 0.5 && pc.temporal.x < 0.5 && pc4.w > 0.0) {
             vec2 pv = (pc4.xy / pc4.w) * 0.5 + 0.5;
             if (all(greaterThanEqual(pv, vec2(0.0))) && all(lessThanEqual(pv, vec2(1.0)))) {
-                vec2 hist = texture(shadowHistRead, pv).rg; // r=shadow, g=depth
+                vec3 hist = texture(shadowHistRead, pv).rgb; // r=shadow, g=depth, b=ao
                 // Accept if the reprojected surface depth matches (same surface).
-                if (abs(hist.g - pc4.w) <= 0.03 * pc4.w)
+                if (abs(hist.g - pc4.w) <= 0.03 * pc4.w) {
                     shadow = mix(hist.r, shadow, pc.temporal.y);
+                    rtao   = mix(hist.b, rtao,   pc.temporal.y);
+                }
             }
         }
     }
-    imageStore(shadowHistWrite, pix, vec4(shadow, curW, 0.0, 0.0));
+    imageStore(shadowHistWrite, pix, vec4(shadow, curW, rtao, 0.0));
 
     // ----- Motion vectors (Current - Prev). Static scene -> camera-only. -----
     // DLSS expects motion vectors to point from previous to current (Current - Prev).
@@ -279,7 +292,7 @@ void main() {
         ambient = indirect * albedo * ao;
     }
     imageStore(directLightImage, pix, vec4(direct, curW)); // .a = linear depth for à-trous edge-stop
-    imageStore(shadowOutImage,   pix, vec4(shadow));
+    imageStore(shadowOutImage,   pix, vec4(shadow, rtao, 0.0, 0.0)); // r=shadow, g=rtao
     imageStore(hdrImage,         pix, vec4(ambient, 1.0));
 
     if (pc.jitter.z > 0.5)             // debug: visualize motion (composite skipped on CPU)

@@ -8,8 +8,8 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(r16f,    set = 0, binding = 0) uniform readonly  image2D shadowInImage;
-layout(r16f,    set = 0, binding = 1) uniform writeonly image2D shadowOutImage;
+layout(rg16f,   set = 0, binding = 0) uniform readonly  image2D shadowInImage;  // r=shadow, g=ao
+layout(rg16f,   set = 0, binding = 1) uniform writeonly image2D shadowOutImage; // r=shadow, g=ao
 layout(rgba16f, set = 0, binding = 2) uniform readonly  image2D normalImage;     // .xyz world N
 layout(rgba16f, set = 0, binding = 3) uniform readonly  image2D directLightImage; // .a linear depth
 
@@ -24,23 +24,24 @@ void main() {
     ivec2 pix = ivec2(gl_GlobalInvocationID.xy);
     if (pix.x >= int(pc.screenSize.x) || pix.y >= int(pc.screenSize.y)) return;
 
-    float Sc = imageLoad(shadowInImage, pix).r;
+    vec2  Sc = imageLoad(shadowInImage, pix).rg; // r=shadow, g=ao
     vec3  Nc = imageLoad(normalImage, pix).xyz;
     float Dc = imageLoad(directLightImage, pix).a;
 
     // Sky / empty (no geometry) — nothing to filter.
-    if (Dc <= 0.0) { imageStore(shadowOutImage, pix, vec4(Sc)); return; }
+    if (Dc <= 0.0) { imageStore(shadowOutImage, pix, vec4(Sc, 0.0, 0.0)); return; }
 
     const float h[5] = float[5](1.0/16.0, 1.0/4.0, 3.0/8.0, 1.0/4.0, 1.0/16.0);
 
-    float sum = 0.0, wsum = 0.0;
+    vec2  sum = vec2(0.0);
+    float wsum = 0.0;
     for (int dy = -2; dy <= 2; ++dy)
     for (int dx = -2; dx <= 2; ++dx) {
         ivec2 q = pix + ivec2(dx, dy) * pc.step;
         if (q.x < 0 || q.y < 0 || q.x >= int(pc.screenSize.x) || q.y >= int(pc.screenSize.y))
             continue;
 
-        float Sn = imageLoad(shadowInImage, q).r;
+        vec2  Sn = imageLoad(shadowInImage, q).rg;
         vec3  Nn = imageLoad(normalImage, q).xyz;
         float Dn = imageLoad(directLightImage, q).a;
         if (Dn <= 0.0) continue; // skip sky taps
@@ -53,5 +54,5 @@ void main() {
         wsum += w;
     }
 
-    imageStore(shadowOutImage, pix, vec4(wsum > 0.0 ? sum / wsum : Sc));
+    imageStore(shadowOutImage, pix, vec4(wsum > 0.0 ? sum / wsum : Sc, 0.0, 0.0));
 }

@@ -180,6 +180,23 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     }
     ImGui::Checkbox("Debug: motion vectors", &s.debugMotionVecs);
 
+    ImGui::SeparatorText("Ambient Occlusion (RTAO)");
+    ImGui::Checkbox("AO enabled", &s.aoEnabled);
+    ImGui::SetItemTooltip("Ray-traced AO against the scene TLAS. Darkens the ambient/indirect\n"
+                          "term in corners and contact points. Off = ambient unmodified.\n"
+                          "Shares the shadow denoiser (Temporal/SVGF/RR), so few rays suffice.");
+    if (s.aoEnabled) {
+        ImGui::SliderInt("AO rays",      &s.aoSamples,   1, 16);
+        ImGui::SetItemTooltip("Cosine-weighted hemisphere rays per pixel. Denoised downstream,\n"
+                              "so 2-4 is usually enough.");
+        ImGui::SliderFloat("AO radius",  &s.aoRadius,    0.05f, 3.0f, "%.2f");
+        ImGui::SetItemTooltip("World-space max occluder distance. Small = tight contact shadows,\n"
+                              "large = broad ambient darkening.");
+        ImGui::SliderFloat("AO intensity", &s.aoIntensity, 0.0f, 3.0f, "%.2f");
+        ImGui::SliderFloat("AO bias",    &s.aoBias,      0.0f, 0.2f, "%.3f");
+        ImGui::SetItemTooltip("Ray origin offset along the normal (fixes self-occlusion acne).");
+    }
+
     ImGui::SeparatorText("Volumetric Fog");
     ImGui::Checkbox("Fog enabled", &s.fogEnabled);
     ImGui::SetItemTooltip("Job: the froxel volumetric god-ray pipeline (scatter -> integrate -> apply).\n"

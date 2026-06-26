@@ -28,6 +28,7 @@ struct ResolvePush {
     glm::vec4  shadowCfg;  // ray-traced shadow config
     glm::vec4  temporal;   // x=reset y=histAlpha z=denoiseOn
     glm::vec4  jitter;     // xy = current jitter in NDC, z = debugMotion flag
+    glm::vec4  ao;         // x=samples(0=off) y=radius z=intensity w=bias
     glm::uvec2 screenSize;
 };
 struct CompositePush {
@@ -1109,7 +1110,7 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                       extent, VK_IMAGE_ASPECT_COLOR_BIT, "HDR Image");
     for (int i = 0; i < 2; i++)
-        m_shadowHist[i] = makeImage(eng, VK_FORMAT_R16G16_SFLOAT,
+        m_shadowHist[i] = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT, // r=shadow g=depth b=ao
                                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                                     extent, VK_IMAGE_ASPECT_COLOR_BIT,
                                     i == 0 ? "Shadow Hist 0" : "Shadow Hist 1");
@@ -1130,10 +1131,10 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     m_directLight = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
                               VK_IMAGE_USAGE_STORAGE_BIT,
                               extent, VK_IMAGE_ASPECT_COLOR_BIT, "Direct Light");
-    m_shadowOut = makeImage(eng, VK_FORMAT_R16_SFLOAT,
+    m_shadowOut = makeImage(eng, VK_FORMAT_R16G16_SFLOAT, // r=shadow g=ao
                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             extent, VK_IMAGE_ASPECT_COLOR_BIT, "Shadow Out A");
-    m_shadowOut2 = makeImage(eng, VK_FORMAT_R16_SFLOAT,
+    m_shadowOut2 = makeImage(eng, VK_FORMAT_R16G16_SFLOAT, // r=shadow g=ao
                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                              extent, VK_IMAGE_ASPECT_COLOR_BIT, "Shadow Out B");
     // DLSS upscale target (display resolution). STORAGE so NGX can write it;
@@ -1687,6 +1688,10 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         float mipBias = dlssActive
             ? std::log2((float)renderExtent.width / (float)displayExtent.width) : 0.0f;
         push.jitter = glm::vec4(jitterNDC, settings.debugMotionVecs ? 1.0f : 0.0f, mipBias);
+        // RTAO: x=samples (0 disables), y=radius, z=intensity, w=bias.
+        push.ao = settings.aoEnabled
+            ? glm::vec4((float)settings.aoSamples, settings.aoRadius, settings.aoIntensity, settings.aoBias)
+            : glm::vec4(0.0f);
         push.screenSize = glm::uvec2(extent.width, extent.height);
         vkCmdPushConstants(cmd, m_resolveLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(ResolvePush), &push);
