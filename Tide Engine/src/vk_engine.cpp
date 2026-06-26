@@ -635,7 +635,7 @@ void VulkanEngine::loadScene() {
     // Start from a corner, a bit above center, and closer in.
     m_camera.setLookAt(center + glm::vec3(radius * 0.6f, radius * 0.45f, radius * 0.6f), center);
     m_camera.farZ = radius * 10.0f + 10.0f;
-    m_camera.speed = radius * 0.25f;
+    m_camera.speed = radius * 0.35f;
     TE_INFO("Scene bounds center=(%.2f,%.2f,%.2f) radius=%.2f\n",
             center.x, center.y, center.z, radius);
 }
