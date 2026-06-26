@@ -16,6 +16,7 @@ struct Settings {
     float ambient         = 0.0f;
     float sunIntensity    = 4.0f;  // directional sun radiance multiplier
     float exposure        = 30.0f;  // tonemap exposure (manual)
+    int   tonemapper      = 1;      // 0 = ACES filmic, 1 = AgX
 
     // Shadows (ray traced).
     bool  shadowsEnabled  = true;

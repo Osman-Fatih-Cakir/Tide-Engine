@@ -342,6 +342,12 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
     }
 
     ImGui::SeparatorText("Tonemap");
+    const char* tonemappers[] = {"ACES (filmic)", "AgX"};
+    ImGui::Combo("Curve", &s.tonemapper, tonemappers, IM_ARRAYSIZE(tonemappers));
+    ImGui::SetItemTooltip("ACES: punchy/contrasty, but hue-shifts bright saturated colors\n"
+                          "(god rays, sun, GI bounce).\n"
+                          "AgX: hue-preserving, desaturates highlights to white. Cleaner\n"
+                          "for the bright volumetric/GI look; slightly softer contrast.");
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 200.0f);
     ImGui::PopItemWidth();
     ImGui::End();

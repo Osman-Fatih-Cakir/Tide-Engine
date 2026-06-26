@@ -42,6 +42,7 @@ struct AtrousPush {
 };
 struct TonemapPush {
     float exposure;
+    int   mode;       // 0 = ACES, 1 = AgX
 };
 struct FogScatterPush {
     glm::mat4  invViewProj;
@@ -2159,7 +2160,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapLayout,
                                 0, 1, &tonemapSet, 0, nullptr);
-        TonemapPush tp{settings.exposure};
+        TonemapPush tp{settings.exposure, settings.tonemapper};
         vkCmdPushConstants(cmd, m_tonemapLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(TonemapPush), &tp);
         vkCmdDraw(cmd, 3, 1, 0, 0);
