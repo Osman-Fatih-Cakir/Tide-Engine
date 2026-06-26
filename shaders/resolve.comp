@@ -118,7 +118,17 @@ void main() {
         vec3 sky = skyColor(rayDir, normalize(pc.sunDir.xyz));
         imageStore(hdrImage, pix, vec4(sky, 1.0));
         imageStore(shadowHistWrite, pix, vec4(1.0, 1e6, 1.0, 0.0)); // lit + far depth + ao open
-        imageStore(motionImage, pix, vec4(0.0));                    // sky: no motion
+        // Sky motion: an infinitely-far point (w=0 ignores camera translation, keeps
+        // rotation) reprojected through the previous matrix. Without this the sky reads
+        // as static and DLSS ghosts the background while the camera turns.
+        vec2 skyMotion = vec2(0.0);
+        vec4 spp = pc.prevViewProj * vec4(rayDir, 0.0);
+        if (spp.w > 0.0) {
+            vec2 prevUV = (spp.xy / spp.w) * 0.5 + 0.5;
+            vec2 curUnjitUV = suv - (pc.jitter.xy * 0.5);
+            skyMotion = prevUV - curUnjitUV;
+        }
+        imageStore(motionImage, pix, vec4(skyMotion, 0.0, 0.0));
         imageStore(diffuseImage, pix, vec4(0.0));                   // RR guides: empty
         imageStore(specularImage, pix, vec4(0.0));
         imageStore(normalImage, pix, vec4(0.0, 0.0, 0.0, 1.0));
@@ -263,15 +273,18 @@ void main() {
     }
     imageStore(shadowHistWrite, pix, vec4(shadow, curW, rtao, 0.0));
 
-    // ----- Motion vectors (Current - Prev). Static scene -> camera-only. -----
-    // DLSS expects motion vectors to point from previous to current (Current - Prev).
+    // ----- Motion vectors. Static scene -> camera-only reprojection. -----
+    // DLSS wants the vector that maps a current pixel back to its previous-frame
+    // position (current + MV = previous), i.e. prevUV - curUV, in UV space (MVScale
+    // converts to render pixels). Computed unjittered: curUV drops the jitter and
+    // prevViewProj is the unjittered previous matrix.
     vec2 motion = vec2(0.0);
     {
         vec4 pp = pc.prevViewProj * vec4(worldPos, 1.0);
         if (pp.w > 0.0) {
             vec2 prevUV = (pp.xy / pp.w) * 0.5 + 0.5;
             vec2 curUnjitUV = uv - (pc.jitter.xy * 0.5);
-            motion = curUnjitUV - prevUV;
+            motion = prevUV - curUnjitUV;
         }
     }
     imageStore(motionImage, pix, vec4(motion, 0.0, 0.0));
