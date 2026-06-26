@@ -5,6 +5,11 @@
 // No vertex/index buffers — the icosahedron is generated from gl_VertexIndex.
 // gl_InstanceIndex = probe index; position comes from the DDGI grid params (UBO).
 
+// Probe relocation offsets (set0 b3), before the include so the debug spheres draw
+// at the relocated probe positions.
+layout(std430, set = 0, binding = 3) readonly buffer ProbeOffsets { vec4 probeOffsets[]; };
+#define DDGI_PROBE_OFFSET(idx) probeOffsets[idx].xyz
+
 #include "ddgi.glsl"
 
 layout(std140, set = 0, binding = 0) uniform DdgiUBO { DdgiParams ddgi; };

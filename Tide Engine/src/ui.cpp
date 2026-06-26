@@ -310,6 +310,12 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
         ImGui::SetItemTooltip("Job: world-space probe grid resolution (rebuilds the atlases).\n"
                               "Result: more probes = finer indirect detail + cost. The grid wraps the scene bounds.");
 
+        ImGui::Checkbox("Probe relocation", &s.giRelocation);
+        ImGui::SetItemTooltip("Job: each frame, slide probes out of walls/furniture into open space\n"
+                              "(using their own ray distances).\n"
+                              "Result: fixes black pockets in tight gaps (under tables) and hard lines where\n"
+                              "a probe sat inside geometry. Off = probes stay fixed on the grid.");
+
         ImGui::Checkbox("Show probe grid", &s.giDebugProbes);
         ImGui::SetItemTooltip("Draws each probe as a small sphere colored by its irradiance.\n"
                               "Probes classified invalid (inside/behind geometry) show RED.\n"

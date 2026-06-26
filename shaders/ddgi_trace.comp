@@ -30,6 +30,11 @@ layout(scalar, set = 0, binding = 4) readonly buffer Instances { GpuInstance ins
 layout(set = 0, binding = 5) uniform accelerationStructureEXT topLevelAS;
 layout(std430, set = 0, binding = 6) readonly buffer Geometries { GpuGeometry geometries[]; };
 
+// Probe relocation offsets (set1 b4). Declared before the include so ddgiProbePos
+// folds them into the probe world position (ray origins shift with the probe).
+layout(std430, set = 1, binding = 4) readonly buffer ProbeOffsets { vec4 probeOffsets[]; };
+#define DDGI_PROBE_OFFSET(idx) probeOffsets[idx].xyz
+
 #include "ddgi.glsl"
 #include "sky.glsl"
 #include "rtshadow.glsl"

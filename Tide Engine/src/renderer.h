@@ -144,6 +144,7 @@ private:
     Image  m_ddgiIrradiance{};   // RGBA16F oct irradiance atlas (kept in GENERAL)
     Image  m_ddgiDepth{};        // RG16F oct depth/moments atlas (kept in GENERAL)
     Buffer m_ddgiRays{};         // vec4[probe*128] ray radiance + hit distance (SSBO)
+    Buffer m_ddgiOffsets{};      // vec4[probe] probe relocation offsets (xyz, world units)
     Buffer m_ddgiUbo{};          // host-visible DdgiParams UBO (shared by all 3 passes)
     glm::ivec3 m_ddgiCounts = {16, 8, 16};
     bool   m_ddgiHaveHistory = false;
@@ -156,6 +157,11 @@ private:
     VkPipelineLayout      m_ddgiUpdateLayout    = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_ddgiUpdateSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet       m_ddgiUpdateSet       = VK_NULL_HANDLE;
+    // Probe relocation: one invocation per probe, writes the offset buffer.
+    VkPipeline            m_ddgiRelocatePipeline  = VK_NULL_HANDLE;
+    VkPipelineLayout      m_ddgiRelocateLayout    = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_ddgiRelocateSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_ddgiRelocateSet       = VK_NULL_HANDLE;
     // Sampling set (set 2 of the resolve pipeline): UBO + irradiance + depth.
     VkDescriptorSetLayout m_ddgiSampleSetLayout = VK_NULL_HANDLE;
     VkDescriptorSet       m_ddgiSampleSet       = VK_NULL_HANDLE;

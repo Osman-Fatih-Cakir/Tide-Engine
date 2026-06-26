@@ -635,7 +635,7 @@ void VulkanEngine::loadScene() {
     // Start from a corner, a bit above center, and closer in.
     m_camera.setLookAt(center + glm::vec3(radius * 0.6f, radius * 0.45f, radius * 0.6f), center);
     m_camera.farZ = radius * 10.0f + 10.0f;
-    m_camera.speed = radius * 0.15f;
+    m_camera.speed = radius * 0.25f;
     TE_INFO("Scene bounds center=(%.2f,%.2f,%.2f) radius=%.2f\n",
             center.x, center.y, center.z, radius);
 }
@@ -925,7 +925,7 @@ void VulkanEngine::cmdEndLabel(VkCommandBuffer cmd) {
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint32_t kStateMagic   = 0x54494445u; // 'TIDE'
-constexpr uint32_t kStateVersion = 9u; // bump whenever the Settings struct layout changes
+constexpr uint32_t kStateVersion = 10u; // bump whenever the Settings struct layout changes
 struct StateBlob {
     uint32_t  magic, version;
     Settings  settings;

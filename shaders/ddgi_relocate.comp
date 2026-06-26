@@ -1,0 +1,67 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// DDGI probe relocation: one invocation per probe. Using this frame's traced ray
+// distances, nudge the probe out of geometry (many backface hits) and away from any
+// surface it sits too close to, toward open space. The offset is stored per probe and
+// folded into the probe world position by ddgiProbePos everywhere it's used. Converges
+// over a few frames; clamped so a probe never leaves its grid-cell neighbourhood.
+
+layout(local_size_x = 64) in;
+
+// Read+write offsets (set0 b2). Declared (and the macro defined) before the include.
+layout(std430, set = 0, binding = 2) buffer ProbeOffsets { vec4 probeOffsets[]; };
+#define DDGI_PROBE_OFFSET(idx) probeOffsets[idx].xyz
+
+#include "ddgi.glsl"
+
+layout(std140, set = 0, binding = 0) uniform DdgiUBO { DdgiParams ddgi; };
+layout(std430, set = 0, binding = 1) readonly buffer RayRadiance { vec4 rayResult[]; };
+
+void main() {
+    int probe = int(gl_GlobalInvocationID.x);
+    if (probe >= ddgiProbeCount(ddgi)) return;
+
+    int  rays   = ddgi.gridCounts.w;
+    vec3 offset = probeOffsets[probe].xyz; // distances below are measured from here
+
+    float closestBack   = 1e30; vec3 closestBackDir   = vec3(0.0);
+    float closestFront  = 1e30; vec3 closestFrontDir  = vec3(0.0);
+    float farthestFront = 0.0;  vec3 farthestFrontDir = vec3(0.0);
+    int   backCount = 0;
+
+    for (int r = 0; r < rays; r++) {
+        float d   = rayResult[probe * DDGI_MAX_RAYS + r].a;
+        vec3  dir = ddgiRayDir(ddgi, r); // same rotation the trace pass used this frame
+        if (d < 0.0) {
+            // Backface hit: trace stored -(t * 0.2); recover the true distance (×5).
+            backCount++;
+            float t = -d * 5.0;
+            if (t < closestBack) { closestBack = t; closestBackDir = dir; }
+        } else {
+            if (d < closestFront)  { closestFront  = d; closestFrontDir  = dir; }
+            if (d > farthestFront) { farthestFront = d; farthestFrontDir = dir; }
+        }
+    }
+
+    float spacing  = min(ddgi.gridSpacing.x, min(ddgi.gridSpacing.y, ddgi.gridSpacing.z));
+    float minFront = 0.20 * spacing; // how close a probe may sit to a frontface
+
+    vec3 newOffset = offset;
+    if (closestBack < 1e30 && float(backCount) / float(rays) > 0.25) {
+        // Inside geometry: step along the nearest backface ray to cross out of the wall.
+        newOffset = offset + closestBackDir * (closestBack + minFront);
+    } else if (closestFront < minFront) {
+        // Too close to a surface: back away toward the most open direction (only when it
+        // points roughly opposite, so we don't move straight into another near surface).
+        if (dot(closestFrontDir, farthestFrontDir) <= 0.0)
+            newOffset = offset + farthestFrontDir * minFront;
+    } else {
+        // Plenty of room: ease the offset back toward the grid slot.
+        newOffset = offset * 0.95;
+    }
+
+    // Keep the probe within ~0.45 cell of its slot (never swaps with a neighbour).
+    vec3 maxOff = 0.45 * ddgi.gridSpacing.xyz;
+    probeOffsets[probe].xyz = clamp(newOffset, -maxOff, maxOff);
+}

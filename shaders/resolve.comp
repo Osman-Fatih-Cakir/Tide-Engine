@@ -78,6 +78,11 @@ layout(push_constant) uniform Push {
 
 #include "rtshadow.glsl"
 
+// Probe relocation offsets (set2 b3), before the include so ddgiProbePos uses them
+// (sampling must agree with the relocated positions the trace pass used).
+layout(std430, set = 2, binding = 3) readonly buffer ProbeOffsets { vec4 probeOffsets[]; };
+#define DDGI_PROBE_OFFSET(idx) probeOffsets[idx].xyz
+
 // DDGI helpers (probe grid math, octahedral atlas, irradiance sampling).
 #include "ddgi.glsl"
 

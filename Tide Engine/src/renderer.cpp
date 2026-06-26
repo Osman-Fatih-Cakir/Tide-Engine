@@ -317,16 +317,17 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     // ---- DDGI set layouts (created early; resolve set2 references the sample one) ----
     {
         // Trace set: b0 UBO, b1 ray SSBO (write), b2 irradiance + b3 depth (prev-frame
-        // sampled, for multi-bounce feedback).
-        VkDescriptorSetLayoutBinding b[4]{};
+        // sampled, for multi-bounce feedback), b4 probe relocation offsets (read).
+        VkDescriptorSetLayoutBinding b[5]{};
         b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b[3].binding = 3; b[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        for (int i = 0; i < 4; i++) { b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+        b[4].binding = 4; b[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        for (int i = 0; i < 5; i++) { b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 4; lci.pBindings = b;
+        lci.bindingCount = 5; lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_ddgiTraceSetLayout));
     }
     {
@@ -343,19 +344,32 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_ddgiUpdateSetLayout));
     }
     {
-        // Sample set (resolve set2): b0 UBO, b1 irradiance (sampler), b2 depth (sampler).
-        // Also used by the probe debug pipeline (vertex reads b0, fragment b0+b1).
-        VkDescriptorSetLayoutBinding b[3]{};
+        // Sample set (resolve set2): b0 UBO, b1 irradiance (sampler), b2 depth (sampler),
+        // b3 probe relocation offsets (read). Also used by the probe debug pipeline.
+        VkDescriptorSetLayoutBinding b[4]{};
         b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        for (int i = 0; i < 3; i++) { b[i].descriptorCount = 1;
+        b[3].binding = 3; b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        for (int i = 0; i < 4; i++) { b[i].descriptorCount = 1;
             b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_VERTEX_BIT |
                               VK_SHADER_STAGE_FRAGMENT_BIT; }
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 3; lci.pBindings = b;
+        lci.bindingCount = 4; lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_ddgiSampleSetLayout));
+    }
+    {
+        // Relocate set: b0 UBO, b1 ray SSBO (read), b2 offsets (read+write).
+        VkDescriptorSetLayoutBinding b[3]{};
+        b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[2].binding = 2; b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        for (int i = 0; i < 3; i++) { b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 3; lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_ddgiRelocateSetLayout));
     }
 
     // ---- Descriptor pool + sets (views written in createTargets) ----
@@ -900,13 +914,13 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
     // Pool + one set each (atlas/buffer views written in createTargets).
     {
         VkDescriptorPoolSize sizes[4]{};
-        sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         sizes[0].descriptorCount = 3;
-        sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;        sizes[1].descriptorCount = 2;
+        sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         sizes[0].descriptorCount = 4; // +relocate
+        sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;        sizes[1].descriptorCount = 6; // ray+offsets across sets
         sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;         sizes[2].descriptorCount = 2;
         sizes[3].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[3].descriptorCount = 4; // trace 2 + sample 2
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pci.maxSets = 3; pci.poolSizeCount = 4; pci.pPoolSizes = sizes;
+        pci.maxSets = 4; pci.poolSizeCount = 4; pci.pPoolSizes = sizes;
         VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_ddgiPool));
 
         VkDescriptorSetAllocateInfo dai{};
@@ -918,6 +932,8 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_ddgiUpdateSet));
         dai.pSetLayouts = &m_ddgiSampleSetLayout;
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_ddgiSampleSet));
+        dai.pSetLayouts = &m_ddgiRelocateSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_ddgiRelocateSet));
     }
     // Trace pipeline: set0 scene (TLAS + bindless), set1 trace.
     {
@@ -953,6 +969,22 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         cpi.stage.module = comp; cpi.stage.pName = "main";
         cpi.layout = m_ddgiUpdateLayout;
         VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_ddgiUpdatePipeline));
+        vkDestroyShaderModule(device, comp, nullptr);
+    }
+    // Relocate pipeline: set0 relocate (UBO + rays + offsets), one invocation per probe.
+    {
+        VkShaderModule comp = loadShaderModule(device, "shaders/ddgi_relocate.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 1; lci.pSetLayouts = &m_ddgiRelocateSetLayout;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_ddgiRelocateLayout));
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = comp; cpi.stage.pName = "main";
+        cpi.layout = m_ddgiRelocateLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_ddgiRelocatePipeline));
         vkDestroyShaderModule(device, comp, nullptr);
     }
     // Probe debug pipeline: instanced icosahedron spheres into HDR, depth-tested.
@@ -1171,6 +1203,12 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     m_ddgiRays = createBuffer(eng.allocator(), rayBytes,
                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
                               VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
+    // Probe relocation offsets (vec4 per probe; xyz used). Persists across frames
+    // (the relocate pass nudges each probe a little each frame), so clear once to 0.
+    VkDeviceSize offsetBytes = (VkDeviceSize)Nx * Ny * Nz * sizeof(glm::vec4);
+    m_ddgiOffsets = createBuffer(eng.allocator(), offsetBytes,
+                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
 
     // Initialize history images + shadowOut2 + froxel volumes to GENERAL so the per-frame
     // GENERAL->GENERAL barriers are always valid. (shadowHist read needs it; shadowOut2 is
@@ -1196,6 +1234,7 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
         }
+        vkCmdFillBuffer(cmd, m_ddgiOffsets.buffer, 0, offsetBytes, 0); // zero relocation offsets
     });
     m_haveHistory = false;
     m_histIndex = 0;
@@ -1306,6 +1345,7 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     // ----- DDGI descriptor writes -----
     VkDescriptorBufferInfo uboInfo{m_ddgiUbo.buffer, 0, sizeof(DdgiParams)};
     VkDescriptorBufferInfo rayInfo{m_ddgiRays.buffer, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo offInfo{m_ddgiOffsets.buffer, 0, VK_WHOLE_SIZE};
     auto addBuf = [&](VkDescriptorSet set, uint32_t bind, VkDescriptorType t,
                       const VkDescriptorBufferInfo* info) {
         VkWriteDescriptorSet x{};
@@ -1324,15 +1364,21 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     addBuf(m_ddgiTraceSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &rayInfo);
     add(m_ddgiTraceSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ddgiIrrSamp);
     add(m_ddgiTraceSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ddgiDepthSamp);
+    addBuf(m_ddgiTraceSet, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &offInfo);
     // Update: UBO + ray SSBO (read) + irradiance/depth (storage).
     addBuf(m_ddgiUpdateSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &uboInfo);
     addBuf(m_ddgiUpdateSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &rayInfo);
     add(m_ddgiUpdateSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ddgiIrrStore);
     add(m_ddgiUpdateSet, 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ddgiDepthStore);
-    // Sample (resolve set2): UBO + irradiance/depth (sampled).
+    // Sample (resolve set2): UBO + irradiance/depth (sampled) + offsets (read).
     addBuf(m_ddgiSampleSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &uboInfo);
     add(m_ddgiSampleSet, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ddgiIrrSamp);
     add(m_ddgiSampleSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ddgiDepthSamp);
+    addBuf(m_ddgiSampleSet, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &offInfo);
+    // Relocate: UBO + ray SSBO (read) + offsets (read+write).
+    addBuf(m_ddgiRelocateSet, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &uboInfo);
+    addBuf(m_ddgiRelocateSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &rayInfo);
+    addBuf(m_ddgiRelocateSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &offInfo);
 
     vkUpdateDescriptorSets(eng.device(), (uint32_t)w.size(), w.data(), 0, nullptr);
 }
@@ -1356,6 +1402,7 @@ void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_ddgiIrradiance);
     destroyImage(eng.allocator(), eng.device(), m_ddgiDepth);
     destroyBuffer(eng.allocator(), m_ddgiRays);
+    destroyBuffer(eng.allocator(), m_ddgiOffsets);
 }
 
 void Renderer::destroy(VulkanEngine& eng) {
@@ -1398,8 +1445,11 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_ddgiTraceLayout) vkDestroyPipelineLayout(device, m_ddgiTraceLayout, nullptr);
     if (m_ddgiUpdatePipeline) vkDestroyPipeline(device, m_ddgiUpdatePipeline, nullptr);
     if (m_ddgiUpdateLayout) vkDestroyPipelineLayout(device, m_ddgiUpdateLayout, nullptr);
+    if (m_ddgiRelocatePipeline) vkDestroyPipeline(device, m_ddgiRelocatePipeline, nullptr);
+    if (m_ddgiRelocateLayout) vkDestroyPipelineLayout(device, m_ddgiRelocateLayout, nullptr);
     if (m_ddgiTraceSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiTraceSetLayout, nullptr);
     if (m_ddgiUpdateSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiUpdateSetLayout, nullptr);
+    if (m_ddgiRelocateSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiRelocateSetLayout, nullptr);
     if (m_ddgiSampleSetLayout) vkDestroyDescriptorSetLayout(device, m_ddgiSampleSetLayout, nullptr);
     if (m_ddgiPool) vkDestroyDescriptorPool(device, m_ddgiPool, nullptr);
     if (m_probeDebugPipeline) vkDestroyPipeline(device, m_probeDebugPipeline, nullptr);
@@ -1601,8 +1651,19 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                                     0, 2, tset, 0, nullptr);
             vkCmdDispatch(cmd, probeCount, 1, 1);
 
-            // Trace writes -> update reads the ray buffer.
+            // Trace writes -> update + relocate read the ray buffer.
             memBarrier(VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+
+            // ---- Relocate: nudge each probe out of geometry using this frame's rays ----
+            // Writes the offset buffer, read by resolve (this frame) and trace (next).
+            if (settings.giRelocation) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiRelocatePipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiRelocateLayout,
+                                        0, 1, &m_ddgiRelocateSet, 0, nullptr);
+                vkCmdDispatch(cmd, (probeCount + 63) / 64, 1, 1);
+                memBarrier(VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+            }
+
             // Trace sampled the atlases -> update overwrites them (WAR).
             for (VkImage g : {m_ddgiIrradiance.image, m_ddgiDepth.image})
                 imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,

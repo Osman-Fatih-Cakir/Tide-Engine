@@ -88,6 +88,7 @@ struct Settings {
     float giSkyIntensity = 2.0f; // sky/env contribution on ray miss (procedural sky uncalibrated)
     float giMultiBounce  = 1.0f; // multi-bounce feedback gain (1 = physical, >1 exaggerates)
     int   giProbesX = 16, giProbesY = 8, giProbesZ = 16; // grid resolution (recreate)
+    bool  giRelocation = true;   // slide probes out of geometry into open space (off = grid-fixed)
     bool  giDebugProbes = false; // visualize probes as shaded spheres
     // Probe grid bounds. When giGridManual is off, the engine auto-fits these to the
     // scene each frame (and the UI shows them); when on, the artist places the grid by

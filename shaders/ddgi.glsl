@@ -27,15 +27,23 @@ struct DdgiParams {
 // ---- probe <-> world / atlas ----
 int  ddgiProbeCount(DdgiParams p) { return p.gridCounts.x * p.gridCounts.y * p.gridCounts.z; }
 
-vec3 ddgiProbePos(DdgiParams p, ivec3 c) {
-    return p.gridOrigin.xyz + p.gridSpacing.xyz * vec3(c);
-}
 ivec3 ddgiProbeCoord(DdgiParams p, int idx) {
     int nx = p.gridCounts.x, ny = p.gridCounts.y;
     return ivec3(idx % nx, (idx / nx) % ny, idx / (nx * ny));
 }
 int ddgiProbeIndex(DdgiParams p, ivec3 c) {
     return c.x + p.gridCounts.x * (c.y + p.gridCounts.y * c.z);
+}
+
+// Probe relocation offset (world units), added to the grid position so probes can
+// slide out of geometry into open space. A shader with the offset SSBO bound defines
+// DDGI_PROBE_OFFSET before including this header; otherwise it's a no-op (offset 0).
+#ifndef DDGI_PROBE_OFFSET
+#define DDGI_PROBE_OFFSET(idx) vec3(0.0)
+#endif
+vec3 ddgiProbePos(DdgiParams p, ivec3 c) {
+    return p.gridOrigin.xyz + p.gridSpacing.xyz * vec3(c)
+         + DDGI_PROBE_OFFSET(ddgiProbeIndex(p, c));
 }
 ivec2 ddgiTile(DdgiParams p, ivec3 c) { return ivec2(c.x, c.y + p.gridCounts.y * c.z); }
 
