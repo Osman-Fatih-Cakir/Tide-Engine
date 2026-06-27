@@ -10,7 +10,7 @@ struct NVSDK_NGX_Handle;
 // DLSS 3.5 Ray Reconstruction (DLSS-D) via raw NVIDIA NGX (no Streamline).
 // One unified model: denoises the noisy ray-traced lighting AND upscales render->
 // display resolution. Needs jitter + motion + HW depth + guide buffers (diffuse/
-// specular albedo, world normal + packed roughness) + camera matrices (Faz 6.5 C).
+// specular albedo, world normal + packed roughness) + camera matrices.
 // Hardcoded, single feature. (Super Resolution path was removed — RR only.)
 class Dlss {
 public:

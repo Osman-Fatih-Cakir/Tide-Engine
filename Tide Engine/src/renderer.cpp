@@ -97,7 +97,7 @@ static float halton(uint32_t i, uint32_t base) {
     return r;
 }
 
-// DDGI (Faz 8). Octahedral tile resolutions + per-probe ray budget (SSBO stride).
+// DDGI. Octahedral tile resolutions + per-probe ray budget (SSBO stride).
 // Must match shaders/ddgi.glsl.
 static constexpr uint32_t DDGI_MAX_RAYS  = 128;
 static constexpr uint32_t DDGI_IRR_RES   = 8;
@@ -766,7 +766,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         vkDestroyShaderModule(device, frag, nullptr);
     }
 
-    // ======================= Volumetric fog (Faz 7) =======================
+    // ======================= Volumetric fog =======================
     // Linear 3D sampler (clamp) for froxel reprojection + the apply lookup.
     {
         VkSamplerCreateInfo sci{};
@@ -905,7 +905,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         vkDestroyShaderModule(device, comp, nullptr);
     }
 
-    // ======================= DDGI (Faz 8) =======================
+    // ======================= DDGI =======================
     // Shared params UBO (host-visible, persistently mapped; updated each frame).
     m_ddgiUbo = createBuffer(eng.allocator(), sizeof(DdgiParams),
                              VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
@@ -1840,7 +1840,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         m_eng->cmdEndLabel(cmd);
     }
 
-    // ===================== Volumetric Fog (Faz 7) =====================
+    // ===================== Volumetric Fog =====================
     // Build the froxel volume now (scatter -> integrate). The APPLY onto HDR is
     // deferred until AFTER the transparent pass so glass is fogged too (it draws
     // later and writes no depth). directLight.a carries linear depth for the lookup.

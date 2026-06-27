@@ -8,7 +8,7 @@ class VulkanEngine;
 class Scene;
 class Dlss;
 
-// Visibility-buffer renderer (Faz 4). Owns the screen-sized vis (R32_UINT) and
+// Visibility-buffer renderer. Owns the screen-sized vis (R32_UINT) and
 // HDR (RGBA16F) targets and the three passes:
 //   Visibility (raster) -> Resolve (compute, PBR -> HDR) -> Tonemap (HDR -> swapchain).
 // Hardcoded on purpose; no abstraction layers.
@@ -69,7 +69,7 @@ private:
     VkSampler  m_hdrSampler = VK_NULL_HANDLE;
     VkSampler  m_histSampler = VK_NULL_HANDLE;
 
-    // Volumetric fog (Faz 7): camera-frustum froxel volume (3D images).
+    // Volumetric fog: camera-frustum froxel volume (3D images).
     Image      m_froxelScatter[2]{};    // RGBA16F: rgb in-scatter, a extinction (temporal ping-pong)
     Image      m_froxelIntegrated{};    // RGBA16F: rgb accumulated in-scatter, a transmittance
     VkSampler  m_froxelSampler = VK_NULL_HANDLE; // linear 3D sampler (clamp)
@@ -138,7 +138,7 @@ private:
 
     VkDescriptorPool m_pool = VK_NULL_HANDLE;
 
-    // ======================= DDGI (Faz 8) =======================
+    // ======================= DDGI =======================
     // World-space probe grid -> octahedral irradiance + depth atlases (one big 2D
     // image each, tiled per probe), sampled in resolve to replace flat ambient.
     Image  m_ddgiIrradiance{};   // RGBA16F oct irradiance atlas (kept in GENERAL)

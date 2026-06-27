@@ -245,7 +245,7 @@ void main() {
         shadow = traceSunShadow(worldPos, N, L, pc.shadowCfg.x,
                                 int(pc.shadowCfg.y), uint(pc.shadowCfg.w), vec2(pix));
 
-    // ----- Ray-traced ambient occlusion (Faz 9) -----
+    // ----- Ray-traced ambient occlusion -----
     // Modulates the ambient/indirect term only; applied in the composite pass. ao.x=0
     // disables (=> ao=1, clean regression). intensity (ao.z) pushes occlusion harder.
     float rtao = 1.0;

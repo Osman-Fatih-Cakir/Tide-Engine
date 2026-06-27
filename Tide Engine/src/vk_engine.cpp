@@ -12,8 +12,7 @@ static constexpr bool kEnableValidation = true;
 static constexpr bool kEnableValidation = false;
 #endif
 
-// Device extensions we require up-front so later phases (bindless / RT GI)
-// need no extra device setup.
+// Device extensions we require up-front (bindless / RT / DLSS).
 static const char* kDeviceExtensions[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
     VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, // core in 1.3, but ImGui backend wants it explicit
@@ -277,7 +276,7 @@ void VulkanEngine::initDevice() {
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
 
-    // Feature chain — enabled now so later phases are shader-only.
+    // Feature chain.
     VkPhysicalDeviceRayQueryFeaturesKHR rayQuery{};
     rayQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
     rayQuery.rayQuery = VK_TRUE;

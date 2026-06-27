@@ -33,20 +33,20 @@ struct Settings {
     float svgfPhiNormal     = 64.0f;// normal edge-stop sharpness (higher = more edge-preserving)
     float svgfPhiDepth      = 1.0f; // depth edge-stop tolerance (lower = more edge-preserving)
 
-    // Ambient Occlusion (Faz 9) — ray-traced AO against the scene TLAS. Modulates the
+    // Ambient Occlusion — ray-traced AO against the scene TLAS. Modulates the
     // ambient/indirect term only (composite: hdr = ambient*ao + direct*shadow).
     // Shares the shadow denoise stack (temporal + à-trous), so few samples suffice.
-    bool  aoEnabled   = true;   // off => ao=1.0 (clean regression vs Faz 8)
+    bool  aoEnabled   = true;   // off => ao=1.0
     int   aoSamples   = 4;      // cosine-weighted hemisphere rays per pixel
     float aoRadius    = 0.6f;   // world-space max occluder distance
     float aoIntensity = 1.0f;   // strength (0 = no effect, >1 exaggerates)
     float aoBias      = 0.02f;  // ray origin offset along N (self-occlusion fix, world units)
 
-    // TAA / DLSS pipeline foundation (Faz 6.5 Aşama A).
+    // TAA / DLSS pipeline foundation.
     bool  taaJitter       = false;  // sub-pixel Halton jitter — auto-forced on when DLSS is active
     bool  debugMotionVecs = false;  // show motion vectors instead of shaded color
 
-    // DLSS Ray Reconstruction (Faz 6.5). Derived from `denoiser==3` by the UI.
+    // DLSS Ray Reconstruction. Derived from `denoiser==3` by the UI.
     bool  dlssEnabled     = false;
     int   dlssQuality     = 2;      // 0 Perf, 1 Balanced, 2 Quality, 3 UltraPerf, 4 DLAA
 
@@ -56,8 +56,8 @@ struct Settings {
     uint32_t renderW = 0, renderH = 0;   // render resolution
     uint32_t displayW = 0, displayH = 0; // display resolution
 
-    // Volumetric fog (Faz 7) — froxel-based, RT-shadowed god rays.
-    bool  fogEnabled      = true;  // default off so density-0 path is a clean regression
+    // Volumetric fog — froxel-based, RT-shadowed god rays.
+    bool  fogEnabled      = true;
     int   fogQuality      = 2;     // froxel grid preset (0..3); see fogGridDim() / UI labels
     float fogDensity      = 0.09f; // extinction per world unit (higher = thicker)
     float fogScatter      = 0.7f;  // in-scatter intensity (scattering albedo)
@@ -78,9 +78,9 @@ struct Settings {
     float fogBoxEdge    = 0.5f;     // smoothstep falloff width at the box faces (world units)
     bool  fogDebugBox   = false;    // draw the fog box as a wireframe
 
-    // Realtime GI — DDGI (Faz 8). World-space probe grid + octahedral irradiance/depth
+    // Realtime GI — DDGI. World-space probe grid + octahedral irradiance/depth
     // atlas, sampled in resolve.comp to replace the flat ambient term.
-    bool  giEnabled    = true; // default off so giIntensity-0 path is a clean regression
+    bool  giEnabled    = true;
     float giIntensity  = 2.0f;  // indirect irradiance multiplier (0 = old flat ambient)
     float giHysteresis = 0.988f; // probe temporal blend (higher = stabler, slower to react)
     int   giRaysPerProbe = 64;  // rays traced per probe per frame (<= 128)
