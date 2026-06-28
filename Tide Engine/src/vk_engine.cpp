@@ -117,6 +117,10 @@ void VulkanEngine::run() {
         last = now;
 
         { ZoneScopedN("Poll Events"); glfwPollEvents(); }
+        // F11 toggles borderless fullscreen (edge-detected; great for recording).
+        bool f11 = glfwGetKey(m_window, GLFW_KEY_F11) == GLFW_PRESS;
+        if (f11 && !m_f11Down) toggleFullscreen();
+        m_f11Down = f11;
         { ZoneScopedN("Camera Update");
           if (m_camPlaying) updateCameraPath((float)dt);
           else              m_camera.update(m_window, (float)dt); }
@@ -154,6 +158,27 @@ void VulkanEngine::initWindow() {
         auto* e = reinterpret_cast<VulkanEngine*>(glfwGetWindowUserPointer(w));
         e->m_framebufferResized = true;
     });
+}
+
+// Borderless fullscreen on the monitor the window is on (decoration off + sized to
+// the video mode). The framebuffer-resize callback drives the swapchain recreate.
+void VulkanEngine::toggleFullscreen() {
+    if (!m_fullscreen) {
+        glfwGetWindowPos(m_window, &m_savedX, &m_savedY);
+        glfwGetWindowSize(m_window, &m_savedW, &m_savedH);
+        GLFWmonitor* mon = glfwGetPrimaryMonitor();
+        const GLFWvidmode* mode = mon ? glfwGetVideoMode(mon) : nullptr;
+        if (!mode) return;
+        int mx = 0, my = 0;
+        glfwGetMonitorPos(mon, &mx, &my);
+        glfwSetWindowAttrib(m_window, GLFW_DECORATED, GLFW_FALSE);
+        glfwSetWindowMonitor(m_window, nullptr, mx, my, mode->width, mode->height, 0);
+        m_fullscreen = true;
+    } else {
+        glfwSetWindowAttrib(m_window, GLFW_DECORATED, GLFW_TRUE);
+        glfwSetWindowMonitor(m_window, nullptr, m_savedX, m_savedY, m_savedW, m_savedH, 0);
+        m_fullscreen = false;
+    }
 }
 
 // ===========================================================================

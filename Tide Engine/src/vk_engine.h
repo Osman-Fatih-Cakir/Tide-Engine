@@ -44,6 +44,7 @@ public:
 private:
     // --- setup steps ---
     void initWindow();
+    void toggleFullscreen(); // borderless fullscreen toggle (F11)
     void initInstance();
     void initSurface();
     void pickPhysicalDevice();
@@ -76,6 +77,9 @@ private:
     uint32_t    m_width            = 1600;
     uint32_t    m_height           = 900;
     bool        m_framebufferResized = false;
+    bool        m_fullscreen         = false; // borderless fullscreen (F11)
+    bool        m_f11Down            = false; // F11 edge detection
+    int         m_savedX = 0, m_savedY = 0, m_savedW = 1600, m_savedH = 900; // windowed geometry
     bool        m_lastVsync          = true;  // tracks present-mode changes from UI
     float       m_lastCpuMs          = 0.0f;  // measured CPU work time (excl. VSync idle)
 

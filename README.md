@@ -65,6 +65,7 @@ The engine supports interchangeable, mutually exclusive denoisers to clean up th
 | **W / A / S / D** | Move forward / left / back / right |
 | **Q / E** | Move down / up |
 | **Left Shift (hold)** | Move faster |
+| **F11** | Toggle borderless fullscreen |
 
 All rendering, lighting, fog, GI, AO, and tonemapping parameters — plus the cinematic camera-path editor — are tweakable live from the on-screen ImGui panel.
 
