@@ -1,6 +1,14 @@
 #pragma once
 #include "pch.h"
 
+// One stop on the camera flythrough path: a full camera transform.
+struct CamWaypoint {
+    glm::vec3 pos   = glm::vec3(0.0f);
+    float     yaw   = 0.0f; // degrees (matches Camera)
+    float     pitch = 0.0f; // degrees
+};
+constexpr int kMaxWaypoints = 32; // fixed array so Settings stays POD (binary state blob)
+
 // Live-tweakable parameters (driven by the ImGui panel). Grows as features land.
 struct Settings {
     float sunAzimuthDeg   = 193.0f;
@@ -96,6 +104,13 @@ struct Settings {
     bool  giGridManual = false;
     glm::vec3 giGridMin = glm::vec3(0.0f);
     glm::vec3 giGridMax = glm::vec3(0.0f);
+
+    // Camera flythrough path. Waypoints are captured from the live camera; Play
+    // snaps to the first and moves smoothly through them (slerp rotation).
+    CamWaypoint camPath[kMaxWaypoints];
+    int   camPathCount = 0;
+    float camPathSpeed = 2.0f;     // world units/sec along the path
+    bool  camPathLoop  = false;    // restart from the first waypoint at the end
 
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 

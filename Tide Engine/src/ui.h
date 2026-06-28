@@ -2,6 +2,7 @@
 #include "pch.h"
 
 class VulkanEngine;
+class Camera;
 struct Settings;
 
 // Thin ImGui wrapper (GLFW + Vulkan backend, dynamic rendering).
@@ -12,7 +13,9 @@ public:
     void beginFrame();
     // dt = real wall-clock delta (timing/pacing). cpuMs = measured CPU work time
     // this frame (excludes VSync/fence idle) — what the graph/stats display.
-    void buildPanel(Settings& s, float dt, float cpuMs);
+    // camPlaying drives the Play/Stop label; playToggled is set when it's clicked.
+    void buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled,
+                    float dt, float cpuMs);
     void render(VkCommandBuffer cmd);
     void destroy();
 

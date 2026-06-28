@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "vk_engine.h"
 #include "settings.h"
+#include "camera.h"
 
 #include <algorithm>
 #include <cmath>
@@ -62,7 +63,8 @@ void Ui::beginFrame() {
     ImGui::NewFrame();
 }
 
-void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
+void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled,
+                    float dt, float cpuMs) {
     // Real frame time (dt) drives the FPS + graph; CPU work time (cpuMs) is a
     // separate readout. Refresh displayed numbers once per real second.
     m_acc += dt;
@@ -356,6 +358,72 @@ void Ui::buildPanel(Settings& s, float dt, float cpuMs) {
                           "for the bright volumetric/GI look; slightly softer contrast.");
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 200.0f);
     ImGui::PopItemWidth();
+
+    // ---- Camera path: capture waypoints, reorder/delete, play a flythrough. ----
+    ImGui::SeparatorText("Camera Path");
+    ImGui::BeginDisabled(camPlaying); // no editing mid-playback
+    if (ImGui::Button("Add") && s.camPathCount < kMaxWaypoints) {
+        CamWaypoint& w = s.camPath[s.camPathCount++];
+        w.pos = cam.position; w.yaw = cam.yaw; w.pitch = cam.pitch;
+    }
+    ImGui::SetItemTooltip("Append the current camera transform as the next waypoint.");
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) s.camPathCount = 0;
+
+    if (s.camPathCount == 0) {
+        ImGui::TextDisabled("(empty)");
+    }
+    // Each row: "Point N" with small square up/down/delete buttons aligned to its right.
+    const float sq = ImGui::GetFontSize() + 2.0f; // compact square buttons
+    int del = -1, moveUp = -1, moveDown = -1, setHere = -1;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 3.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 0.0f));
+    for (int i = 0; i < s.camPathCount; i++) {
+        ImGui::PushID(i);
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Point %d", i + 1);
+        ImGui::SameLine(70.0f); // align the button cluster across rows
+        ImGui::BeginDisabled(i == 0);
+        if (ImGui::Button("^", ImVec2(sq, sq))) moveUp = i;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(i == s.camPathCount - 1);
+        if (ImGui::Button("v", ImVec2(sq, sq))) moveDown = i;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("o", ImVec2(sq, sq))) setHere = i;
+        ImGui::SetItemTooltip("Overwrite this waypoint with the current camera transform.");
+        ImGui::SameLine();
+        if (ImGui::Button("x", ImVec2(sq, sq))) del = i;
+        ImGui::PopID();
+    }
+    ImGui::PopStyleVar(2);
+    if (setHere >= 0) {
+        CamWaypoint& w = s.camPath[setHere];
+        w.pos = cam.position; w.yaw = cam.yaw; w.pitch = cam.pitch;
+    }
+    if (del >= 0) {
+        for (int i = del; i < s.camPathCount - 1; i++) s.camPath[i] = s.camPath[i + 1];
+        s.camPathCount--;
+    }
+    if (moveUp > 0)   std::swap(s.camPath[moveUp], s.camPath[moveUp - 1]);
+    if (moveDown >= 0 && moveDown < s.camPathCount - 1)
+        std::swap(s.camPath[moveDown], s.camPath[moveDown + 1]);
+
+    ImGui::SetNextItemWidth(150.0f);
+    ImGui::SliderFloat("Speed##campath", &s.camPathSpeed, 0.1f, 20.0f, "%.1f u/s");
+    ImGui::EndDisabled(); // camPlaying
+
+    ImGui::Checkbox("Loop", &s.camPathLoop);
+    ImGui::SetItemTooltip("Restart from the first waypoint at the end instead of stopping.");
+
+    ImGui::BeginDisabled(s.camPathCount < 2);
+    if (ImGui::Button(camPlaying ? "Stop" : "Play", ImVec2(80.0f, 0.0f)))
+        playToggled = true;
+    ImGui::EndDisabled();
+    if (s.camPathCount < 2)
+        ImGui::SetItemTooltip("Add at least 2 points to play a flythrough.");
+
     ImGui::End();
 
     // Frame-time graph: a separate bar pinned to the bottom, full width.

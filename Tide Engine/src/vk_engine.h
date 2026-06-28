@@ -67,6 +67,10 @@ private:
     void drawFrame(float dt);
     void recordCommands(VkCommandBuffer cmd, uint32_t imageIndex);
 
+    // --- camera path playback ---
+    void applyWaypoint(int i);          // snap the camera onto waypoint i
+    void updateCameraPath(float dt);    // advance playback; auto-stops at the end
+
     // --- window ---
     GLFWwindow* m_window           = nullptr;
     uint32_t    m_width            = 1600;
@@ -128,6 +132,11 @@ private:
     int  m_lastFogQuality  = 1;  // tracks fog grid preset changes from UI
     glm::ivec3 m_lastGiProbes = {-1, -1, -1}; // tracks DDGI probe grid changes from UI
     float m_sunAnimTime    = 0.0f; // sun-sweep phase accumulator
+
+    // --- camera path playback (runtime only; not persisted) ---
+    bool  m_camPlaying = false;
+    int   m_camSeg     = 0;    // current segment index (between waypoint i and i+1)
+    float m_camSegT    = 0.0f; // 0..1 progress along the current segment
 
     // --- profiling ---
     TracyVkCtx m_tracyCtx = nullptr;

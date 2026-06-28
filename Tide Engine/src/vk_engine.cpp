@@ -114,7 +114,9 @@ void VulkanEngine::run() {
         last = now;
 
         { ZoneScopedN("Poll Events"); glfwPollEvents(); }
-        { ZoneScopedN("Camera Update"); m_camera.update(m_window, (float)dt); }
+        { ZoneScopedN("Camera Update");
+          if (m_camPlaying) updateCameraPath((float)dt);
+          else              m_camera.update(m_window, (float)dt); }
         drawFrame((float)dt);
 
         FrameMark; // Tracy CPU frame boundary
@@ -825,9 +827,19 @@ void VulkanEngine::drawFrame(float dt) {
     auto cpuStart = std::chrono::high_resolution_clock::now();
 
     // Build the UI only once we know we'll render this frame.
+    bool playToggled = false;
     { ZoneScopedN("ImGui Build");
       m_ui.beginFrame();
-      m_ui.buildPanel(m_settings, dt, m_lastCpuMs); } // displays previous frame's CPU ms
+      // displays previous frame's CPU ms; playToggled set when the Play/Stop button is hit
+      m_ui.buildPanel(m_settings, m_camera, m_camPlaying, playToggled, dt, m_lastCpuMs); }
+    if (playToggled) {
+        if (m_camPlaying) {
+            m_camPlaying = false; // stop: leave the camera where it is
+        } else if (m_settings.camPathCount >= 2) {
+            m_camPlaying = true; m_camSeg = 0; m_camSegT = 0.0f;
+            applyWaypoint(0); // snap to the start
+        }
+    }
 
     VK_CHECK(vkResetFences(m_device, 1, &frame.inFlight));
     VK_CHECK(vkResetCommandPool(m_device, frame.pool, 0));
@@ -920,11 +932,65 @@ void VulkanEngine::cmdEndLabel(VkCommandBuffer cmd) {
 }
 
 // ---------------------------------------------------------------------------
+// Camera path playback
+// ---------------------------------------------------------------------------
+void VulkanEngine::applyWaypoint(int i) {
+    const CamWaypoint& w = m_settings.camPath[i];
+    m_camera.position = w.pos;
+    m_camera.yaw      = w.yaw;
+    m_camera.pitch    = w.pitch;
+}
+
+void VulkanEngine::updateCameraPath(float dt) {
+    const Settings& s = m_settings;
+    if (s.camPathCount < 2) { m_camPlaying = false; return; }
+
+    // Segment count: looping adds a closing segment from the last waypoint back to
+    // the first (no teleport); otherwise it's the open chain. Endpoint b wraps with %.
+    int nSeg = s.camPathLoop ? s.camPathCount : s.camPathCount - 1;
+    const glm::vec3 up(0.0f, 1.0f, 0.0f);
+    float speed = std::max(s.camPathSpeed, 0.01f);
+
+    // Advance along the current segment at the chosen speed. A segment's duration
+    // is its length / speed, so motion is constant-speed regardless of spacing.
+    auto segLength = [&](int seg) {
+        return glm::length(s.camPath[(seg + 1) % s.camPathCount].pos - s.camPath[seg].pos);
+    };
+    m_camSegT += dt / std::max(segLength(m_camSeg) / speed, 1e-4f); // avoid div0
+
+    while (m_camSegT >= 1.0f) {
+        m_camSegT -= 1.0f;
+        m_camSeg++;
+        if (m_camSeg >= nSeg) {            // past the last segment
+            if (s.camPathLoop) {
+                m_camSeg = 0;              // wrap around and keep going
+            } else {
+                applyWaypoint(s.camPathCount - 1);
+                m_camPlaying = false;
+                return;
+            }
+        }
+    }
+
+    const CamWaypoint& a = s.camPath[m_camSeg];
+    const CamWaypoint& b = s.camPath[(m_camSeg + 1) % s.camPathCount];
+    float t = m_camSegT;
+
+    // Position: straight lerp (constant speed). Rotation: quaternion slerp so the
+    // turn is shortest-path and smooth, even past 180 degrees.
+    glm::vec3 pos = glm::mix(a.pos, b.pos, t);
+    glm::quat qa = glm::quatLookAt(Camera::dirFromYawPitch(a.yaw, a.pitch), up);
+    glm::quat qb = glm::quatLookAt(Camera::dirFromYawPitch(b.yaw, b.pitch), up);
+    glm::vec3 fwd = glm::slerp(qa, qb, t) * glm::vec3(0.0f, 0.0f, -1.0f); // quatLookAt looks down -Z
+    m_camera.setLookAt(pos, pos + fwd);
+}
+
+// ---------------------------------------------------------------------------
 // Persisted state (Settings + camera) — single binary blob in the working dir.
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint32_t kStateMagic   = 0x54494445u; // 'TIDE'
-constexpr uint32_t kStateVersion = 10u; // bump whenever the Settings struct layout changes
+constexpr uint32_t kStateVersion = 12u; // bump whenever the Settings struct layout changes
 struct StateBlob {
     uint32_t  magic, version;
     Settings  settings;

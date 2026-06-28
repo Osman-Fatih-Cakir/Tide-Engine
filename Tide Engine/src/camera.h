@@ -10,6 +10,9 @@ public:
     glm::mat4 view() const;
     glm::mat4 proj(float aspect) const; // Vulkan clip space (y-flipped, 0..1 depth)
 
+    // Forward (look) direction for an arbitrary yaw/pitch (used by the path player).
+    static glm::vec3 dirFromYawPitch(float yawDeg, float pitchDeg);
+
     glm::vec3 position = glm::vec3(0.0f, 1.5f, 4.0f);
     float yaw   = -90.0f; // degrees; -90 looks down -Z
     float pitch = 0.0f;

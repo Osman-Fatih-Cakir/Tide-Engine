@@ -1,11 +1,15 @@
 #include "camera.h"
 
-glm::vec3 Camera::forward() const {
-    float cy = std::cos(glm::radians(yaw));
-    float sy = std::sin(glm::radians(yaw));
-    float cp = std::cos(glm::radians(pitch));
-    float sp = std::sin(glm::radians(pitch));
+glm::vec3 Camera::dirFromYawPitch(float yawDeg, float pitchDeg) {
+    float cy = std::cos(glm::radians(yawDeg));
+    float sy = std::sin(glm::radians(yawDeg));
+    float cp = std::cos(glm::radians(pitchDeg));
+    float sp = std::sin(glm::radians(pitchDeg));
     return glm::normalize(glm::vec3(cy * cp, sp, sy * cp));
+}
+
+glm::vec3 Camera::forward() const {
+    return dirFromYawPitch(yaw, pitch);
 }
 
 void Camera::setLookAt(glm::vec3 eye, glm::vec3 target) {
