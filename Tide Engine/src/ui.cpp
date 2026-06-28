@@ -359,6 +359,12 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 200.0f);
     ImGui::PopItemWidth();
 
+    // ---- Camera ----
+    ImGui::SeparatorText("Camera");
+    ImGui::SetNextItemWidth(150.0f);
+    ImGui::SliderFloat("FOV", &cam.fovDeg, 30.0f, 120.0f, "%.0f deg");
+    ImGui::SetItemTooltip("Vertical field of view. Higher = wider angle (more in frame, stronger perspective).");
+
     // ---- Camera path: capture waypoints, reorder/delete, play a flythrough. ----
     ImGui::SeparatorText("Camera Path");
     ImGui::BeginDisabled(camPlaying); // no editing mid-playback

@@ -46,16 +46,33 @@ The engine supports interchangeable, mutually exclusive denoisers to clean up th
 *   **Multi-Bounce Feedback:** Probes re-sample the previous frame's irradiance at ray hits (RTXGI-style), so light energy accumulates over multiple bounces and naturally fills the room.
 *   **Probe Classification (Leak-Free):** Probes that land inside or behind geometry are detected (via backface ray ratio) and excluded from interpolation, eliminating light leaks through thin walls with **zero per-pixel rays** — true to DDGI's amortized design. Combined with Chebyshev variance-depth visibility and temporal hysteresis.
 
+### 🌑 Ray Traced Ambient Occlusion (RTAO)
+*   **TLAS-Based AO:** Cosine-weighted hemisphere rays are traced against the scene acceleration structure to compute exact contact and corner occlusion.
+*   **Indirect-Only Modulation:** AO darkens only the ambient/indirect term, grounding objects without crushing direct sunlight.
+*   **Shared Denoiser Stack:** Piggybacks the shadow denoiser (Temporal / SVGF / DLSS RR), so just a few rays per pixel resolve cleanly.
+
 ### 🛠️ Developer Tools & Utilities
 *   **Real-time UI:** Immediate feedback and variable tweaking via integrated ImGui.
+*   **Cinematic Camera Path:** Capture camera waypoints, reorder/edit them in-place, and play a smooth flythrough (position lerp + quaternion-slerp rotation), with optional looping — ideal for demo reels.
 *   **Profiling:** Deeply integrated Tracy CPU and GPU markers for granular performance analysis.
-*   **State Persistence:** Saves and loads camera coordinates and environment settings on the fly.
+*   **State Persistence:** Saves and loads camera coordinates, the camera path, and all environment settings on the fly.
 
 ## 🚧 Status (Work In Progress)
 
 Tide Engine is currently **WIP**.
-**Recently Landed:** **RT-based DDGI (Dynamic Diffuse Global Illumination)** — a world-space probe grid built on the existing TLAS now captures and injects dynamic multi-bounce indirect light, replacing the old flat ambient term with leak-free, ray-traced GI.
-**Up Next:** Ambient occlusion and bloom/post-processing to round out the lighting pipeline.
+**Recently Landed:** **Ray Traced Ambient Occlusion (RTAO)** — TLAS-traced hemisphere occlusion that grounds geometry in corners and contact points, reusing the existing shadow denoiser stack.
+**Up Next:** Bloom and post-processing (and native-resolution anti-aliasing) to round out the lighting pipeline.
+
+## 🎮 Controls
+
+| Input | Action |
+|-------|--------|
+| **Right Mouse (hold)** | Look around |
+| **W / A / S / D** | Move forward / left / back / right |
+| **Q / E** | Move down / up |
+| **Left Shift (hold)** | Move faster |
+
+All rendering, lighting, fog, GI, AO, and tonemapping parameters — plus the cinematic camera-path editor — are tweakable live from the on-screen ImGui panel.
 
 ## 🚀 Building the Project
 
