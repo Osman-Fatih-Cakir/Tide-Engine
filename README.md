@@ -57,12 +57,6 @@ The engine supports interchangeable, mutually exclusive denoisers to clean up th
 *   **Profiling:** Deeply integrated Tracy CPU and GPU markers for granular performance analysis.
 *   **State Persistence:** Saves and loads camera coordinates, the camera path, and all environment settings on the fly.
 
-## 🚧 Status (Work In Progress)
-
-Tide Engine is currently **WIP**.
-**Recently Landed:** **Ray Traced Ambient Occlusion (RTAO)** — TLAS-traced hemisphere occlusion that grounds geometry in corners and contact points, reusing the existing shadow denoiser stack.
-**Up Next:** Bloom and post-processing (and native-resolution anti-aliasing) to round out the lighting pipeline.
-
 ## 🎮 Controls
 
 | Input | Action |
