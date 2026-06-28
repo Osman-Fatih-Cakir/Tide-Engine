@@ -42,7 +42,18 @@ struct AtrousPush {
 };
 struct TonemapPush {
     float exposure;
-    int   mode;       // 0 = ACES, 1 = AgX
+    int   mode;           // 0 = ACES, 1 = AgX
+    float bloomIntensity; // 0 = bloom off
+};
+struct BloomDownPush {
+    glm::vec2 srcTexel;   // 1 / source resolution
+    int       firstMip;   // 1 on the scene -> mip0 prefilter step
+    float     threshold;
+    float     knee;
+};
+struct BloomUpPush {
+    glm::vec2 srcTexel;   // 1 / source (lower mip) resolution
+    float     radius;
 };
 struct FogScatterPush {
     glm::mat4  invViewProj;
@@ -302,16 +313,31 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_atrousSetLayout));
     }
     {
-        VkDescriptorSetLayoutBinding b{};
-        b.binding = 0; // hdr sampled
-        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b.descriptorCount = 1;
-        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // b0 = hdr sampled, b1 = bloom mip0 sampled.
+        VkDescriptorSetLayoutBinding b[2]{};
+        for (uint32_t i = 0; i < 2; i++) {
+            b[i].binding = i;
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
         VkDescriptorSetLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        lci.bindingCount = 1;
-        lci.pBindings = &b;
+        lci.bindingCount = 2;
+        lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_tonemapSetLayout));
+    }
+    // ---- Bloom set layouts (down + up): b0 sampler src, b1 storage dst ----
+    {
+        VkDescriptorSetLayoutBinding b[2]{};
+        b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        for (int i = 0; i < 2; i++) { b[i].descriptorCount = 1; b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; }
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 2; lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_bloomDownSetLayout));
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_bloomUpSetLayout));
     }
 
     // ---- DDGI set layouts (created early; resolve set2 references the sample one) ----
@@ -379,7 +405,7 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         // 2 resolve * 9 storage + 2 composite * 3 + 2 à-trous * 4 = 18 + 6 + 8 = 32.
         sizes[0].descriptorCount = 32;
         sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        sizes[1].descriptorCount = 4;  // 2 tonemap (hdr/dlss) + 2 resolve sets (histRead)
+        sizes[1].descriptorCount = 6;  // 2 tonemap * 2 (hdr/dlss + bloom) + 2 resolve (histRead)
         VkDescriptorPoolCreateInfo pci{};
         pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pci.maxSets = 8;               // 2 resolve + 2 composite + 2 à-trous + 2 tonemap
@@ -403,6 +429,34 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         dai.pSetLayouts = &m_tonemapSetLayout;
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_tonemapSet));
         VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_tonemapSetDlss));
+    }
+
+    // ---- Bloom descriptor pool + sets (views written in createTargets) ----
+    {
+        const int N = MAX_BLOOM_MIPS;
+        VkDescriptorPoolSize sizes[2]{};
+        sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        sizes[0].descriptorCount = 2 + N + N; // down0(2) + down(N) + up(N)
+        sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        sizes[1].descriptorCount = 2 + N + N;
+        VkDescriptorPoolCreateInfo pci{};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets = 2 + N + N;
+        pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+        VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_bloomPool));
+
+        VkDescriptorSetAllocateInfo dai{};
+        dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dai.descriptorPool = m_bloomPool;
+        dai.descriptorSetCount = 1;
+        dai.pSetLayouts = &m_bloomDownSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_bloomDownSet0[0]));
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_bloomDownSet0[1]));
+        for (int i = 0; i < N; i++)
+            VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_bloomDownSet[i]));
+        dai.pSetLayouts = &m_bloomUpSetLayout;
+        for (int i = 0; i < N; i++)
+            VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_bloomUpSet[i]));
     }
 
     // ---- Visibility pipeline (raster, position-only vertex input) ----
@@ -764,6 +818,35 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpi, nullptr, &m_tonemapPipeline));
         vkDestroyShaderModule(device, vert, nullptr);
         vkDestroyShaderModule(device, frag, nullptr);
+    }
+
+    // ---- Bloom pipelines (compute: progressive downsample + tent upsample) ----
+    {
+        VkShaderModule down = loadShaderModule(device, "shaders/bloom_down.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pc.size = sizeof(BloomDownPush);
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 1; lci.pSetLayouts = &m_bloomDownSetLayout;
+        lci.pushConstantRangeCount = 1; lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_bloomDownLayout));
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = down; cpi.stage.pName = "main";
+        cpi.layout = m_bloomDownLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_bloomDownPipeline));
+        vkDestroyShaderModule(device, down, nullptr);
+
+        VkShaderModule up = loadShaderModule(device, "shaders/bloom_up.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+        pc.size = sizeof(BloomUpPush);
+        lci.pSetLayouts = &m_bloomUpSetLayout;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_bloomUpLayout));
+        cpi.stage.module = up; cpi.layout = m_bloomUpLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_bloomUpPipeline));
+        vkDestroyShaderModule(device, up, nullptr);
     }
 
     // ======================= Volumetric fog =======================
@@ -1177,6 +1260,21 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
                              VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                              displayExtent, VK_IMAGE_ASPECT_COLOR_BIT, "DLSS Output");
 
+    // Bloom mip chain (display res, halving each level). mip[0] = half display res.
+    // Kept permanently in GENERAL: storage writes + sampler reads, like the froxels.
+    m_bloomMipCount = 0;
+    for (int i = 0; i < MAX_BLOOM_MIPS; i++) {
+        uint32_t w = std::max(1u, displayExtent.width  >> (i + 1));
+        uint32_t h = std::max(1u, displayExtent.height >> (i + 1));
+        m_bloomExtent[i] = {w, h};
+        char nm[24]; snprintf(nm, sizeof(nm), "Bloom Mip %d", i);
+        m_bloomMip[i] = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                  {w, h}, VK_IMAGE_ASPECT_COLOR_BIT, nm);
+        m_bloomMipCount++;
+        if (w <= 4 || h <= 4) break; // stop once tiny
+    }
+
     // Froxel volumes (3D). Kept permanently in GENERAL: storage writes + sampler reads.
     VkImageUsageFlags froxelUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     for (int i = 0; i < 2; i++)
@@ -1217,6 +1315,11 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
         for (VkImage g : {m_shadowHist[0].image, m_shadowHist[1].image, m_shadowOut2.image,
                           m_froxelScatter[0].image, m_froxelScatter[1].image, m_froxelIntegrated.image})
             imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+        for (int i = 0; i < m_bloomMipCount; i++)
+            imgBarrier(cmd, m_bloomMip[i].image, VK_IMAGE_ASPECT_COLOR_BIT,
                        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
@@ -1315,6 +1418,33 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     add(m_tonemapSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrSamp);
     add(m_tonemapSetDlss, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &dlssSamp);
 
+    // ----- Bloom descriptor writes (all bloom mips live in GENERAL) -----
+    // Persist until vkUpdateDescriptorSets at the end of the function.
+    VkDescriptorImageInfo bloomSamp[MAX_BLOOM_MIPS]{}, bloomStore[MAX_BLOOM_MIPS]{};
+    for (int i = 0; i < m_bloomMipCount; i++) {
+        bloomSamp[i].sampler = m_hdrSampler;
+        bloomSamp[i].imageView = m_bloomMip[i].view;
+        bloomSamp[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        bloomStore[i].imageView = m_bloomMip[i].view;
+        bloomStore[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    }
+    // Tonemap samples bloom mip0 (b1).
+    add(m_tonemapSet,     1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &bloomSamp[0]);
+    add(m_tonemapSetDlss, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &bloomSamp[0]);
+    // Prefilter (scene -> mip0): two variants for the HDR vs DLSS-output source.
+    add(m_bloomDownSet0[0], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrSamp);
+    add(m_bloomDownSet0[0], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          &bloomStore[0]);
+    add(m_bloomDownSet0[1], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &dlssSamp);
+    add(m_bloomDownSet0[1], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          &bloomStore[0]);
+    for (int i = 1; i < m_bloomMipCount; i++) {
+        // Downsample: mip[i-1] -> mip[i].
+        add(m_bloomDownSet[i], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &bloomSamp[i - 1]);
+        add(m_bloomDownSet[i], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          &bloomStore[i]);
+        // Upsample: mip[i] -> mip[i-1].
+        add(m_bloomUpSet[i], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &bloomSamp[i]);
+        add(m_bloomUpSet[i], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          &bloomStore[i - 1]);
+    }
+
     // ----- Fog descriptor writes (all froxel volumes live in GENERAL) -----
     VkDescriptorImageInfo froxelStore[2]{}, froxelSamp[2]{}, integStore{}, integSamp{};
     for (int i = 0; i < 2; i++) {
@@ -1396,6 +1526,9 @@ void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_shadowOut);
     destroyImage(eng.allocator(), eng.device(), m_shadowOut2);
     destroyImage(eng.allocator(), eng.device(), m_dlssOutput);
+    for (int i = 0; i < m_bloomMipCount; i++)
+        destroyImage(eng.allocator(), eng.device(), m_bloomMip[i]);
+    m_bloomMipCount = 0;
     destroyImage(eng.allocator(), eng.device(), m_froxelScatter[0]);
     destroyImage(eng.allocator(), eng.device(), m_froxelScatter[1]);
     destroyImage(eng.allocator(), eng.device(), m_froxelIntegrated);
@@ -1427,6 +1560,14 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_atrousSetLayout) vkDestroyDescriptorSetLayout(device, m_atrousSetLayout, nullptr);
     if (m_tonemapSetLayout) vkDestroyDescriptorSetLayout(device, m_tonemapSetLayout, nullptr);
     if (m_pool) vkDestroyDescriptorPool(device, m_pool, nullptr);
+    // Bloom.
+    if (m_bloomDownPipeline) vkDestroyPipeline(device, m_bloomDownPipeline, nullptr);
+    if (m_bloomDownLayout) vkDestroyPipelineLayout(device, m_bloomDownLayout, nullptr);
+    if (m_bloomUpPipeline) vkDestroyPipeline(device, m_bloomUpPipeline, nullptr);
+    if (m_bloomUpLayout) vkDestroyPipelineLayout(device, m_bloomUpLayout, nullptr);
+    if (m_bloomDownSetLayout) vkDestroyDescriptorSetLayout(device, m_bloomDownSetLayout, nullptr);
+    if (m_bloomUpSetLayout) vkDestroyDescriptorSetLayout(device, m_bloomUpSetLayout, nullptr);
+    if (m_bloomPool) vkDestroyDescriptorPool(device, m_bloomPool, nullptr);
     // Fog.
     if (m_froxelSampler) vkDestroySampler(device, m_froxelSampler, nullptr);
     if (m_fogScatterPipeline) vkDestroyPipeline(device, m_fogScatterPipeline, nullptr);
@@ -2171,24 +2312,94 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         m_eng->cmdEndLabel(cmd);
     }
 
+    // ===================== Pass C2: Bloom (PBR dual-filter, display res) =====================
+    // Runs on the final scene HDR (DLSS output if upscaled, else render-res HDR), before
+    // tonemap. Progressive Karis downsample then tent upsample; combined in the tonemap.
+    const bool bloomActive = settings.bloomEnabled && m_bloomMipCount >= 2;
+    const bool srcIsDlss = (dlssActive && dlss);
+    if (bloomActive) {
+        TracyVkZone(tracy, cmd, "Bloom");
+        m_eng->cmdBeginLabel(cmd, "Bloom");
+        VkImage srcImg = srcIsDlss ? m_dlssOutput.image : m_hdr.image;
+        // Transition the scene source to a sampleable layout (tonemap reuses it as-is).
+        if (srcIsDlss)
+            imgBarrier(cmd, srcImg, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        else
+            imgBarrier(cmd, srcImg, VK_IMAGE_ASPECT_COLOR_BIT,
+                       hdrStage, hdrAccess,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       hdrOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        auto dispatch = [&](VkExtent2D e) {
+            vkCmdDispatch(cmd, (e.width + 7) / 8, (e.height + 7) / 8, 1);
+        };
+
+        // --- Downsample: scene -> mip0 -> mip1 -> ... ---
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bloomDownPipeline);
+        for (int i = 0; i < m_bloomMipCount; i++) {
+            VkExtent2D srcSize = (i == 0) ? displayExtent : m_bloomExtent[i - 1];
+            BloomDownPush p{};
+            p.srcTexel = {1.0f / srcSize.width, 1.0f / srcSize.height};
+            p.firstMip = (i == 0) ? 1 : 0;
+            p.threshold = settings.bloomThreshold;
+            p.knee = settings.bloomKnee;
+            VkDescriptorSet set = (i == 0) ? m_bloomDownSet0[srcIsDlss ? 1 : 0] : m_bloomDownSet[i];
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bloomDownLayout,
+                                    0, 1, &set, 0, nullptr);
+            vkCmdPushConstants(cmd, m_bloomDownLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(p), &p);
+            dispatch(m_bloomExtent[i]);
+            imgBarrier(cmd, m_bloomMip[i].image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+        }
+
+        // --- Upsample: add each smaller mip back into the next-larger one ---
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bloomUpPipeline);
+        for (int i = m_bloomMipCount - 1; i >= 1; i--) {
+            BloomUpPush p{};
+            p.srcTexel = {1.0f / m_bloomExtent[i].width, 1.0f / m_bloomExtent[i].height};
+            p.radius = settings.bloomRadius;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_bloomUpLayout,
+                                    0, 1, &m_bloomUpSet[i], 0, nullptr);
+            vkCmdPushConstants(cmd, m_bloomUpLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(p), &p);
+            dispatch(m_bloomExtent[i - 1]);
+            // mip[i-1] just modified -> next reader: upsample (compute sampler) or, for
+            // mip0, the tonemap (fragment sampler).
+            bool toTonemap = (i - 1 == 0);
+            imgBarrier(cmd, m_bloomMip[i - 1].image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       toTonemap ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                                 : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+        }
+        m_eng->cmdEndLabel(cmd);
+    }
+
     // ===================== Pass D: Tonemap (HDR -> swapchain, display res) =====================
     {
         TracyVkZone(tracy, cmd, "Tonemap");
         m_eng->cmdBeginLabel(cmd, "Tonemap Pass");
 
-        VkDescriptorSet tonemapSet = m_tonemapSet;
-        if (dlssActive && dlss) {
-            // DLSS output (NGX wrote it, GENERAL) -> sampled by tonemap.
-            imgBarrier(cmd, m_dlssOutput.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
-                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            tonemapSet = m_tonemapSetDlss;
-        } else {
-            imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
-                       hdrStage, hdrAccess,
-                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                       hdrOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        VkDescriptorSet tonemapSet = srcIsDlss ? m_tonemapSetDlss : m_tonemapSet;
+        // When bloom ran, it already left the scene source in SHADER_READ_ONLY.
+        if (!bloomActive) {
+            if (srcIsDlss)
+                imgBarrier(cmd, m_dlssOutput.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            else
+                imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                           hdrStage, hdrAccess,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           hdrOld, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
         imgBarrier(cmd, swapchainImage, VK_IMAGE_ASPECT_COLOR_BIT,
                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
@@ -2221,7 +2432,8 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemapLayout,
                                 0, 1, &tonemapSet, 0, nullptr);
-        TonemapPush tp{settings.exposure, settings.tonemapper};
+        TonemapPush tp{settings.exposure, settings.tonemapper,
+                       bloomActive ? settings.bloomIntensity : 0.0f};
         vkCmdPushConstants(cmd, m_tonemapLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(TonemapPush), &tp);
         vkCmdDraw(cmd, 3, 1, 0, 0);

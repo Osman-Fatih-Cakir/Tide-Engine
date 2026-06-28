@@ -1,0 +1,79 @@
+#version 450
+// Progressive bloom downsample (Call of Duty / Jimenez 13-tap). Each step halves
+// resolution. The first step (firstMip) applies a soft-knee prefilter and the Karis
+// average to kill fireflies; later steps use the plain 13-tap weighting.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D uSrc;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D uDst;
+
+layout(push_constant) uniform Push {
+    vec2  srcTexel;   // 1 / source resolution
+    int   firstMip;   // 1 on the prefilter step (scene -> mip0)
+    float threshold;  // soft-knee bright-pass threshold (0 = pass everything)
+    float knee;       // soft-knee width
+} pc;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+// Karis weight: weight a sample group by its inverse luma so a single bright pixel
+// can't dominate the average (firefly suppression on the first downsample).
+float karisWeight(vec3 c) { return 1.0 / (1.0 + dot(c, LUMA)); }
+
+// Soft-knee bright pass (Karis). threshold <= 0 passes the full image (pure PBR).
+vec3 prefilter(vec3 c) {
+    if (pc.threshold <= 0.0) return c;
+    float br = max(c.r, max(c.g, c.b));
+    float kn = pc.threshold * pc.knee + 1e-5;
+    float soft = clamp(br - pc.threshold + kn, 0.0, 2.0 * kn);
+    soft = soft * soft / (4.0 * kn);
+    float contrib = max(soft, br - pc.threshold) / max(br, 1e-5);
+    return c * contrib;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dstSize = imageSize(uDst);
+    if (p.x >= dstSize.x || p.y >= dstSize.y) return;
+
+    vec2 uv = (vec2(p) + 0.5) / vec2(dstSize);
+    vec2 t = pc.srcTexel;
+
+    // 13 taps: a 3x3 grid at +-2/0 (a..i) plus an inner 2x2 at +-1 (j..m).
+    vec3 a = texture(uSrc, uv + t * vec2(-2, -2)).rgb;
+    vec3 b = texture(uSrc, uv + t * vec2( 0, -2)).rgb;
+    vec3 c = texture(uSrc, uv + t * vec2( 2, -2)).rgb;
+    vec3 d = texture(uSrc, uv + t * vec2(-2,  0)).rgb;
+    vec3 e = texture(uSrc, uv + t * vec2( 0,  0)).rgb;
+    vec3 f = texture(uSrc, uv + t * vec2( 2,  0)).rgb;
+    vec3 g = texture(uSrc, uv + t * vec2(-2,  2)).rgb;
+    vec3 h = texture(uSrc, uv + t * vec2( 0,  2)).rgb;
+    vec3 i = texture(uSrc, uv + t * vec2( 2,  2)).rgb;
+    vec3 j = texture(uSrc, uv + t * vec2(-1, -1)).rgb;
+    vec3 k = texture(uSrc, uv + t * vec2( 1, -1)).rgb;
+    vec3 l = texture(uSrc, uv + t * vec2(-1,  1)).rgb;
+    vec3 m = texture(uSrc, uv + t * vec2( 1,  1)).rgb;
+
+    vec3 result;
+    if (pc.firstMip == 1) {
+        // Five overlapping 2x2 groups; Karis-weight each to suppress fireflies.
+        vec3 g0 = (a + b + d + e) * 0.25;
+        vec3 g1 = (b + c + e + f) * 0.25;
+        vec3 g2 = (d + e + g + h) * 0.25;
+        vec3 g3 = (e + f + h + i) * 0.25;
+        vec3 g4 = (j + k + l + m) * 0.25;
+        float w0 = karisWeight(g0), w1 = karisWeight(g1), w2 = karisWeight(g2),
+              w3 = karisWeight(g3), w4 = karisWeight(g4);
+        result = (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) /
+                 (w0 + w1 + w2 + w3 + w4);
+        result = prefilter(result);
+    } else {
+        result  = e * 0.125;
+        result += (a + c + g + i) * 0.03125;
+        result += (b + d + f + h) * 0.0625;
+        result += (j + k + l + m) * 0.125;
+    }
+
+    imageStore(uDst, p, vec4(max(result, vec3(0.0)), 1.0));
+}

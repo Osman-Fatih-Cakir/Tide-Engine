@@ -357,6 +357,24 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
                           "AgX: hue-preserving, desaturates highlights to white. Cleaner\n"
                           "for the bright volumetric/GI look; slightly softer contrast.");
     ImGui::SliderFloat("Exposure",  &s.exposure,        0.1f, 200.0f);
+
+    ImGui::SeparatorText("Bloom");
+    ImGui::Checkbox("Bloom enabled", &s.bloomEnabled);
+    ImGui::SetItemTooltip("Energy-conserving HDR bloom (COD/Jimenez dual-filter mip chain).\n"
+                          "Bright highlights (god rays, sun, GI) bleed light into surroundings.");
+    if (s.bloomEnabled) {
+        ImGui::SliderFloat("Intensity##bloom", &s.bloomIntensity, 0.0f, 0.3f, "%.3f");
+        ImGui::SetItemTooltip("Scene<->bloom blend (energy-conserving). ~0.04 is physical; higher = dreamier.");
+        ImGui::SliderFloat("Radius##bloom", &s.bloomRadius, 0.5f, 3.0f, "%.2f");
+        ImGui::SetItemTooltip("Upsample tent spread (scatter). Higher = wider, softer glow.");
+        ImGui::SliderFloat("Threshold##bloom", &s.bloomThreshold, 0.0f, 5.0f, "%.2f");
+        ImGui::SetItemTooltip("Soft-knee bright-pass. 0 = thresholdless (pure PBR, whole image blooms).\n"
+                              "Raise to bloom only bright areas (more classic/artistic).");
+        if (s.bloomThreshold > 0.0f) {
+            ImGui::SliderFloat("Knee##bloom", &s.bloomKnee, 0.0f, 1.0f, "%.2f");
+            ImGui::SetItemTooltip("Soft-knee width around the threshold (smoother roll-in).");
+        }
+    }
     ImGui::PopItemWidth();
 
     // ---- Camera ----
@@ -415,11 +433,11 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     if (moveUp > 0)   std::swap(s.camPath[moveUp], s.camPath[moveUp - 1]);
     if (moveDown >= 0 && moveDown < s.camPathCount - 1)
         std::swap(s.camPath[moveDown], s.camPath[moveDown + 1]);
+    ImGui::EndDisabled(); // camPlaying — editing controls above are locked while playing
 
+    // Speed + Loop stay live during playback so you can tune the motion in real time.
     ImGui::SetNextItemWidth(150.0f);
-    ImGui::SliderFloat("Speed##campath", &s.camPathSpeed, 0.1f, 20.0f, "%.1f u/s");
-    ImGui::EndDisabled(); // camPlaying
-
+    ImGui::SliderFloat("Speed##campath", &s.camPathSpeed, 0.01f, 5.0f, "%.1f u/s");
     ImGui::Checkbox("Loop", &s.camPathLoop);
     ImGui::SetItemTooltip("Restart from the first waypoint at the end instead of stopping.");
 

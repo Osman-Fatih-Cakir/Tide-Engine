@@ -17,7 +17,7 @@ public:
     float yaw   = -90.0f; // degrees; -90 looks down -Z
     float pitch = 0.0f;
 
-    float fovDeg = 60.0f;
+    float fovDeg = 90.0f;
     float nearZ  = 0.05f;
     float farZ   = 500.0f;
 

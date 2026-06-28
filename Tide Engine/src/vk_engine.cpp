@@ -2,6 +2,9 @@
 #include "gltf_loader.h"
 #include <fstream>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/quaternion.hpp> // squad + intermediate for smooth camera-path rotation
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -972,16 +975,44 @@ void VulkanEngine::updateCameraPath(float dt) {
         }
     }
 
-    const CamWaypoint& a = s.camPath[m_camSeg];
-    const CamWaypoint& b = s.camPath[(m_camSeg + 1) % s.camPathCount];
     float t = m_camSegT;
+    int n = s.camPathCount;
 
-    // Position: straight lerp (constant speed). Rotation: quaternion slerp so the
-    // turn is shortest-path and smooth, even past 180 degrees.
-    glm::vec3 pos = glm::mix(a.pos, b.pos, t);
-    glm::quat qa = glm::quatLookAt(Camera::dirFromYawPitch(a.yaw, a.pitch), up);
-    glm::quat qb = glm::quatLookAt(Camera::dirFromYawPitch(b.yaw, b.pitch), up);
-    glm::vec3 fwd = glm::slerp(qa, qb, t) * glm::vec3(0.0f, 0.0f, -1.0f); // quatLookAt looks down -Z
+    // The four control waypoints around this segment (i1 -> i2), needed for the
+    // smooth interpolation tangents. Looping wraps; an open path clamps at the ends.
+    auto idx = [&](int k) {
+        if (s.camPathLoop) return ((k % n) + n) % n;
+        return std::max(0, std::min(n - 1, k));
+    };
+    int i1 = m_camSeg, i2 = idx(m_camSeg + 1), i0 = idx(m_camSeg - 1), i3 = idx(m_camSeg + 2);
+    const CamWaypoint& p0 = s.camPath[i0];
+    const CamWaypoint& p1 = s.camPath[i1];
+    const CamWaypoint& p2 = s.camPath[i2];
+    const CamWaypoint& p3 = s.camPath[i3];
+
+    // Position: Catmull-Rom spline. It passes through every waypoint but keeps the
+    // tangent continuous across them, so the whole path is smooth (no kink at points).
+    float t2 = t * t, t3 = t2 * t;
+    glm::vec3 pos = 0.5f * ((2.0f * p1.pos) +
+                            (-p0.pos + p2.pos) * t +
+                            (2.0f * p0.pos - 5.0f * p1.pos + 4.0f * p2.pos - p3.pos) * t2 +
+                            (-p0.pos + 3.0f * p1.pos - 3.0f * p2.pos + p3.pos) * t3);
+
+    // Rotation: spherical cubic (squad) using neighbour-derived control quaternions,
+    // so the look direction is C1-smooth across waypoints too (no snap). Align all
+    // four to the same hemisphere first for a shortest-path interpolation.
+    glm::quat q0 = glm::quatLookAt(Camera::dirFromYawPitch(p0.yaw, p0.pitch), up);
+    glm::quat q1 = glm::quatLookAt(Camera::dirFromYawPitch(p1.yaw, p1.pitch), up);
+    glm::quat q2 = glm::quatLookAt(Camera::dirFromYawPitch(p2.yaw, p2.pitch), up);
+    glm::quat q3 = glm::quatLookAt(Camera::dirFromYawPitch(p3.yaw, p3.pitch), up);
+    if (glm::dot(q1, q0) < 0.0f) q0 = -q0;
+    if (glm::dot(q1, q2) < 0.0f) q2 = -q2;
+    if (glm::dot(q2, q3) < 0.0f) q3 = -q3;
+    glm::quat a1 = glm::intermediate(q0, q1, q2); // control quat at q1
+    glm::quat a2 = glm::intermediate(q1, q2, q3); // control quat at q2
+    glm::quat q = glm::squad(q1, q2, a1, a2, t);
+    glm::vec3 fwd = q * glm::vec3(0.0f, 0.0f, -1.0f); // quatLookAt looks down -Z
+
     m_camera.setLookAt(pos, pos + fwd);
 }
 
@@ -990,7 +1021,7 @@ void VulkanEngine::updateCameraPath(float dt) {
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint32_t kStateMagic   = 0x54494445u; // 'TIDE'
-constexpr uint32_t kStateVersion = 12u; // bump whenever the Settings struct layout changes
+constexpr uint32_t kStateVersion = 13u; // bump whenever the Settings struct layout changes
 struct StateBlob {
     uint32_t  magic, version;
     Settings  settings;

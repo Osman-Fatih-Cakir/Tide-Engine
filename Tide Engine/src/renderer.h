@@ -138,6 +138,25 @@ private:
 
     VkDescriptorPool m_pool = VK_NULL_HANDLE;
 
+    // ======================= Bloom (PBR dual-filter mip chain) =======================
+    // Karis/Jimenez progressive downsample + tent upsample at display resolution.
+    // mip[0] = half display res; combined into the scene in the tonemap pass.
+    static constexpr int MAX_BLOOM_MIPS = 7;
+    Image      m_bloomMip[MAX_BLOOM_MIPS]{};   // RGBA16F, kept in GENERAL
+    VkExtent2D m_bloomExtent[MAX_BLOOM_MIPS]{};
+    int        m_bloomMipCount = 0;
+
+    VkPipeline            m_bloomDownPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout      m_bloomDownLayout   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_bloomDownSetLayout = VK_NULL_HANDLE;
+    VkPipeline            m_bloomUpPipeline   = VK_NULL_HANDLE;
+    VkPipelineLayout      m_bloomUpLayout     = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_bloomUpSetLayout  = VK_NULL_HANDLE;
+    VkDescriptorSet       m_bloomDownSet0[2]  = {VK_NULL_HANDLE, VK_NULL_HANDLE}; // [0]=hdr src, [1]=dlss src -> mip0
+    VkDescriptorSet       m_bloomDownSet[MAX_BLOOM_MIPS] = {}; // [i]: mip[i-1] -> mip[i] (i>=1)
+    VkDescriptorSet       m_bloomUpSet[MAX_BLOOM_MIPS]   = {}; // [i]: mip[i] -> mip[i-1] (i>=1)
+    VkDescriptorPool      m_bloomPool = VK_NULL_HANDLE;
+
     // ======================= DDGI =======================
     // World-space probe grid -> octahedral irradiance + depth atlases (one big 2D
     // image each, tiled per probe), sampled in resolve to replace flat ambient.

@@ -16,15 +16,22 @@ struct Settings {
     // Sun animation: when on, az/el sweep smoothly between the min/max below
     // (driven CPU-side each frame; reaches the GPU via the existing push constants).
     bool  sunAnimate      = false;
-    float sunAzimuthMin   = 130.0f;
+    float sunAzimuthMin   = 157.0f;
     float sunAzimuthMax   = 214.0f;
-    float sunElevationMin = 18.0f;
-    float sunElevationMax = 40.0f;
+    float sunElevationMin = 29.0f;
+    float sunElevationMax = 31.0f;
     float sunAnimSpeed    = 0.2f;   // radians/sec of the sweep phase (lower = slower)
     float ambient         = 0.0f;
     float sunIntensity    = 4.0f;  // directional sun radiance multiplier
     float exposure        = 30.0f;  // tonemap exposure (manual)
     int   tonemapper      = 1;      // 0 = ACES filmic, 1 = AgX
+
+    // Bloom (physically-based, energy-conserving — COD/Jimenez dual-filter mip chain).
+    bool  bloomEnabled    = true;
+    float bloomIntensity  = 0.064f; // lerp(scene, bloom) blend factor (0..1; ~physical at 0.04)
+    float bloomRadius     = 1.75f;  // upsample tent filter spread (mip blend "scatter")
+    float bloomThreshold  = 0.04f;  // soft-knee bright-pass threshold (0 = thresholdless/pure PBR)
+    float bloomKnee       = 0.5f;   // soft-knee width around the threshold
 
     // Shadows (ray traced).
     bool  shadowsEnabled  = true;
@@ -32,7 +39,7 @@ struct Settings {
     int   shadowSamples   = 1;      // rays per pixel (1 = hard shadow)
     // Denoiser / AA selector (single UI choice; maps to the fields below):
     //   0 Off, 1 Temporal, 2 SVGF, 3 DLSS Ray Reconstruction.
-    int   denoiser = 2;
+    int   denoiser = 3;
     // Derived from `denoiser` by the UI each frame (engine reads these):
     //   shadowDenoiseMode 0=Off 1=Temporal 2=SVGF (auto 0 while RR active).
     int   shadowDenoiseMode = 2;
@@ -56,7 +63,7 @@ struct Settings {
 
     // DLSS Ray Reconstruction. Derived from `denoiser==3` by the UI.
     bool  dlssEnabled     = false;
-    int   dlssQuality     = 2;      // 0 Perf, 1 Balanced, 2 Quality, 3 UltraPerf, 4 DLAA
+    int   dlssQuality     = 4;      // 0 Perf, 1 Balanced, 2 Quality, 3 UltraPerf, 4 DLAA
 
     // DLSS runtime status (read-only; filled by the engine for the UI).
     bool     dlssAvailable = false; // GPU/driver supports DLSS
@@ -109,8 +116,8 @@ struct Settings {
     // snaps to the first and moves smoothly through them (slerp rotation).
     CamWaypoint camPath[kMaxWaypoints];
     int   camPathCount = 0;
-    float camPathSpeed = 2.0f;     // world units/sec along the path
-    bool  camPathLoop  = false;    // restart from the first waypoint at the end
+    float camPathSpeed = 1.0f;     // world units/sec along the path
+    bool  camPathLoop  = true;    // restart from the first waypoint at the end
 
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 

@@ -4,10 +4,12 @@ layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D hdrTex;
+layout(set = 0, binding = 1) uniform sampler2D bloomTex; // accumulated bloom (half-res mip0)
 
 layout(push_constant) uniform Push {
     float exposure;
-    int   mode;       // 0 = ACES, 1 = AgX
+    int   mode;           // 0 = ACES, 1 = AgX
+    float bloomIntensity; // 0 = no bloom (lerp scene<->bloom)
 } pc;
 
 // ----- ACES filmic (Narkowicz approximation) -----
@@ -69,7 +71,14 @@ vec3 agx(vec3 val) {
 }
 
 void main() {
-    vec3 hdr = texture(hdrTex, vUV).rgb * pc.exposure;
+    vec3 scene = texture(hdrTex, vUV).rgb;
+    // Energy-conserving combine: lerp scene<->bloom in linear HDR (Karis/UE style),
+    // so adding bloom never injects extra total energy. Done before exposure/tonemap.
+    if (pc.bloomIntensity > 0.0) {
+        vec3 bloom = texture(bloomTex, vUV).rgb;
+        scene = mix(scene, bloom, pc.bloomIntensity);
+    }
+    vec3 hdr = scene * pc.exposure;
     vec3 ldr = (pc.mode == 1) ? agx(hdr) : acesFilm(hdr);
     // Swapchain is sRGB; hardware applies the OETF, so write linear.
     outColor = vec4(ldr, 1.0);
