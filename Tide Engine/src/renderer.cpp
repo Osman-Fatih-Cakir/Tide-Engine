@@ -44,6 +44,8 @@ struct ReflectPush {
     float      thickness;
     float      maxRoughness;
     float      intensity;
+    int        mode;       // 1 = SSR, 2 = SSR + RT fallback
+    uint32_t   frameIndex;
 };
 struct AtrousPush {
     glm::uvec2 screenSize;
@@ -756,10 +758,13 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         pc.size = sizeof(ReflectPush);
+        // set0 = scene (TLAS for the RT fallback), set1 = reflect images, set2 = DDGI
+        // sample (indirect at RT hit points).
+        VkDescriptorSetLayout sets[3] = {sceneSetLayout, m_reflectSetLayout, m_ddgiSampleSetLayout};
         VkPipelineLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        lci.setLayoutCount = 1;
-        lci.pSetLayouts = &m_reflectSetLayout;
+        lci.setLayoutCount = 3;
+        lci.pSetLayouts = sets;
         lci.pushConstantRangeCount = 1;
         lci.pPushConstantRanges = &pc;
         VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_reflectLayout));
@@ -2108,11 +2113,12 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
                        VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_reflectPipeline);
+        VkDescriptorSet rsets[3] = {scene.descriptorSet, m_reflectSet, m_ddgiSampleSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_reflectLayout,
-                                0, 1, &m_reflectSet, 0, nullptr);
+                                0, 3, rsets, 0, nullptr);
         ReflectPush rp{};
-        rp.viewProj = viewProj;
-        rp.invViewProj = glm::inverse(viewProj);
+        rp.viewProj = jitteredVP;            // match the jittered raster the G-buffer used
+        rp.invViewProj = glm::inverse(jitteredVP);
         rp.cameraPos = glm::vec4(cameraPos, 1.0f);
         rp.screenSize = glm::uvec2(extent.width, extent.height);
         rp.steps = settings.ssrSteps;
@@ -2120,6 +2126,8 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         rp.thickness = settings.ssrThickness;
         rp.maxRoughness = settings.ssrMaxRoughness;
         rp.intensity = settings.reflectionIntensity;
+        rp.mode = settings.reflectionsMode;
+        rp.frameIndex = frame;
         vkCmdPushConstants(cmd, m_reflectLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(ReflectPush), &rp);
         vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);

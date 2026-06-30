@@ -50,4 +50,34 @@ vec2 envBRDFApprox(float NoV, float roughness) {
     return vec2(-1.04, 1.04) * a004 + r.zw;
 }
 
+// Sample a GGX microfacet normal in tangent space (Heitz 2018, visible NDF). Ve is the
+// view direction in tangent space (z = surface normal); u is two uniform randoms.
+vec3 sampleGGXVNDF(vec3 Ve, float roughness, vec2 u) {
+    float a = roughness * roughness;
+    vec3 Vh = normalize(vec3(a * Ve.x, a * Ve.y, Ve.z));
+    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+    vec3 T1 = lensq > 0.0 ? vec3(-Vh.y, Vh.x, 0.0) * inversesqrt(lensq) : vec3(1.0, 0.0, 0.0);
+    vec3 T2 = cross(Vh, T1);
+    float r = sqrt(u.x);
+    float phi = 2.0 * PBR_PI * u.y;
+    float t1 = r * cos(phi);
+    float t2 = r * sin(phi);
+    float s = 0.5 * (1.0 + Vh.z);
+    t2 = (1.0 - s) * sqrt(1.0 - t1 * t1) + s * t2;
+    vec3 Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+    return normalize(vec3(a * Nh.x, a * Nh.y, max(0.0, Nh.z)));
+}
+
+// Importance-sampled reflection direction off a GGX microfacet. Rough surfaces scatter
+// the half-vector widely (blurry reflection); smooth ones collapse to a mirror.
+vec3 importanceSampleGGXReflect(vec3 N, vec3 V, float roughness, vec2 u) {
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, N));
+    vec3 B = cross(N, T);
+    vec3 Ve = vec3(dot(V, T), dot(V, B), dot(V, N));
+    vec3 Hh = sampleGGXVNDF(Ve, roughness, u);
+    vec3 H = Hh.x * T + Hh.y * B + Hh.z * N;
+    return reflect(-V, H);
+}
+
 #endif
