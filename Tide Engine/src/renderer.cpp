@@ -663,10 +663,12 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pc.size = sizeof(TransparentPush);
+        // set0 = scene (TLAS b5), set1 = DDGI sample (indirect light on glass).
+        VkDescriptorSetLayout tsets[2] = {sceneSetLayout, m_ddgiSampleSetLayout};
         VkPipelineLayoutCreateInfo lci{};
         lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        lci.setLayoutCount = 1;
-        lci.pSetLayouts = &sceneSetLayout; // scene set carries the TLAS (b5)
+        lci.setLayoutCount = 2;
+        lci.pSetLayouts = tsets;
         lci.pushConstantRangeCount = 1;
         lci.pPushConstantRanges = &pc;
         VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_transparentLayout));
@@ -2250,8 +2252,9 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &scissor);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentPipeline);
+        VkDescriptorSet tsets[2] = {scene.descriptorSet, m_ddgiSampleSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentLayout,
-                                0, 1, &scene.descriptorSet, 0, nullptr);
+                                0, 2, tsets, 0, nullptr);
 
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &scene.vertexBuffer.buffer, &offset);
@@ -2275,7 +2278,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
             push.model = inst.transform;
             push.cameraPos = glm::vec4(cameraPos, (float)g.materialIndex);
             push.sunDir = glm::vec4(sun, settings.ambient);
-            push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+            push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), settings.glassFresnel);
             push.shadowCfg = shadowCfg;
             vkCmdPushConstants(cmd, m_transparentLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

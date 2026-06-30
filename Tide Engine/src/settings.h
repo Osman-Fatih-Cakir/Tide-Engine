@@ -65,6 +65,7 @@ struct Settings {
     float ssrThickness       = 0.5f;  // depth-test tolerance (linear depth units)
     float ssrMaxRoughness    = 0.6f;  // skip reflections above this (diffuse-dominated)
     float reflectionIntensity= 1.0f;  // master reflection multiplier
+    float glassFresnel       = 0.3f;  // how much grazing Fresnel firms up glass opacity
 
     // TAA / DLSS pipeline foundation.
     bool  taaJitter       = false;  // sub-pixel Halton jitter — auto-forced on when DLSS is active

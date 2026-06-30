@@ -227,6 +227,9 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
         ImGui::SliderFloat("Max roughness",  &s.ssrMaxRoughness, 0.05f, 1.0f, "%.2f");
         ImGui::SetItemTooltip("Skip reflections on surfaces rougher than this (DDGI covers diffuse).");
         ImGui::SliderFloat("Intensity##refl",&s.reflectionIntensity, 0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Glass Fresnel",  &s.glassFresnel, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("How much grazing Fresnel firms up transparent (glass) opacity.\n"
+                              "0 = opacity unchanged; 1 = edges go fully mirror-opaque.");
     }
 
     ImGui::SeparatorText("Volumetric Fog");

@@ -1046,7 +1046,7 @@ void VulkanEngine::updateCameraPath(float dt) {
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint32_t kStateMagic   = 0x54494445u; // 'TIDE'
-constexpr uint32_t kStateVersion = 14u; // bump whenever the Settings struct layout changes
+constexpr uint32_t kStateVersion = 15u; // bump whenever the Settings struct layout changes
 struct StateBlob {
     uint32_t  magic, version;
     Settings  settings;

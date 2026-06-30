@@ -36,11 +36,24 @@ layout(push_constant) uniform Push {
     mat4 model;
     vec4 cameraPos;  // w = materialIndex (float)
     vec4 sunDir;     // xyz = dir to sun, w = ambient
-    vec4 sunColor;   // rgb = radiance
+    vec4 sunColor;   // rgb = radiance, w = glass Fresnel-opacity strength
     vec4 shadowCfg;  // x=sunConeRad y=samples z=shadowsOn w=frameIndex
 } pc;
 
 #include "rtshadow.glsl"
+
+// Probe relocation offsets (set 1 b3), before the include so ddgiProbePos agrees with
+// the relocated positions the DDGI trace used.
+layout(std430, set = 1, binding = 3) readonly buffer ProbeOffsets { vec4 probeOffsets[]; };
+#define DDGI_PROBE_OFFSET(idx) probeOffsets[idx].xyz
+
+#include "ddgi.glsl"
+
+// DDGI sample set (set 1): indirect irradiance for the glass body + environment
+// reflection.
+layout(std140, set = 1, binding = 0) uniform DdgiUBO { DdgiParams ddgi; };
+layout(set = 1, binding = 1) uniform sampler2D ddgiIrradiance;
+layout(set = 1, binding = 2) uniform sampler2D ddgiDepth;
 
 void main() {
     GpuMaterial m = materials[uint(pc.cameraPos.w)];
@@ -91,8 +104,39 @@ void main() {
         shadow = traceSunShadow(vWorldPos, N, L, pc.shadowCfg.x,
                                 int(pc.shadowCfg.y), uint(pc.shadowCfg.w), gl_FragCoord.xy);
 
+    // Direct sun (specular + diffuse), RT-shadowed.
     vec3 color = cookTorrance(N, V, L, albedo, metallic, roughness, pc.sunColor.rgb) * shadow;
-    color += pc.sunDir.w * albedo * ao; // ambient occluded by baked AO
 
-    outColor = vec4(color, opacity);
+    float ndv = max(dot(N, V), 1e-4);
+    vec3  F0 = mix(vec3(0.04), albedo, metallic);
+
+    // Indirect: DDGI irradiance fills the glass body; a second sample along the
+    // reflection direction acts as a (blurry) environment for the specular reflection.
+    // Falls back to the flat ambient when GI is off.
+    vec3 diffuseIndirect, envSpec;
+    if (ddgi.misc.x > 0.5) {
+        diffuseIndirect = ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, vWorldPos, N) * ddgi.params.y;
+        // The atlas stores irradiance (E); the specular reflection wants radiance, so
+        // divide by PI before using it as the environment along the reflection ray.
+        vec3 R = reflect(-V, N);
+        envSpec = ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, vWorldPos, R)
+                  * ddgi.params.y / PBR_PI;
+    } else {
+        diffuseIndirect = vec3(pc.sunDir.w);
+        envSpec = vec3(pc.sunDir.w) / PBR_PI;
+    }
+    color += diffuseIndirect * albedo * ao * (1.0 - metallic);
+
+    // Fresnel environment reflection, weighted by the split-sum environment BRDF.
+    vec3 F   = fresnelSchlickRoughness(ndv, F0, roughness);
+    vec2 ab  = envBRDFApprox(ndv, roughness);
+    color   += envSpec * (F0 * ab.x + ab.y);
+
+    // Fresnel-driven opacity: glass turns more mirror-like (opaque) at grazing angles
+    // and stays transmissive head-on. Use the dielectric grazing term (not the full F,
+    // which can saturate) and ease it so only the silhouette firms up, no white rim.
+    float grazing = pow(1.0 - ndv, 5.0);
+    float alpha = clamp(opacity + (1.0 - opacity) * grazing * pc.sunColor.w, 0.0, 1.0);
+
+    outColor = vec4(color, alpha);
 }
