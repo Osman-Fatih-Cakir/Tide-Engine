@@ -199,6 +199,31 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
         ImGui::SetItemTooltip("Ray origin offset along the normal (fixes self-occlusion acne).");
     }
 
+    ImGui::SeparatorText("Reflections (SSR)");
+    const char* reflModes[] = {"Off", "SSR", "SSR + RT", "RT only"};
+    ImGui::Combo("Mode##refl", &s.reflectionsMode, reflModes, IM_ARRAYSIZE(reflModes));
+    ImGui::SetItemTooltip("Reflections on opaque surfaces. SSR reflects the lit scene visible on\n"
+                          "screen; SSR + RT traces the scene TLAS where the screen-space ray misses;\n"
+                          "RT only skips the screen-space march and always traces. Transparents do not reflect.");
+    if (s.reflectionsMode > 0) {
+        // SSR march params only matter when the screen-space march runs (SSR / SSR+RT,
+        // not RT-only). Grey them out otherwise so they read as inactive.
+        bool ssrActive = (s.reflectionsMode == 1 || s.reflectionsMode == 2);
+        ImGui::BeginDisabled(!ssrActive);
+        ImGui::SliderInt("SSR steps",        &s.ssrSteps,        8, 128);
+        ImGui::SetItemTooltip("Screen-space march samples. More = catches farther/grazing hits, costs more.");
+        ImGui::SliderFloat("SSR distance",   &s.ssrMaxDistance,  2.0f, 100.0f, "%.0f");
+        ImGui::SetItemTooltip("World-space length of the reflected ray march.");
+        ImGui::SliderFloat("SSR thickness",  &s.ssrThickness,    0.05f, 2.0f, "%.2f");
+        ImGui::SetItemTooltip("Assumed surface thickness (depth buffer has no back faces): a hit counts\n"
+                              "only if the ray passes within this depth of the front surface.\n"
+                              "Too small = reflections drop out; too large = smears behind objects.");
+        ImGui::EndDisabled();
+        ImGui::SliderFloat("Max roughness",  &s.ssrMaxRoughness, 0.05f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Skip reflections on surfaces rougher than this (DDGI covers diffuse).");
+        ImGui::SliderFloat("Intensity##refl",&s.reflectionIntensity, 0.0f, 2.0f, "%.2f");
+    }
+
     ImGui::SeparatorText("Volumetric Fog");
     ImGui::Checkbox("Fog enabled", &s.fogEnabled);
     ImGui::SetItemTooltip("Job: the froxel volumetric god-ray pipeline (scatter -> integrate -> apply).\n"

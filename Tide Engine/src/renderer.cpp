@@ -34,6 +34,19 @@ struct ResolvePush {
 struct CompositePush {
     glm::uvec2 screenSize;
 };
+struct ReflectPush {
+    glm::mat4  viewProj;
+    glm::mat4  invViewProj;
+    glm::vec4  cameraPos;   // xyz
+    glm::uvec2 screenSize;
+    int        steps;
+    float      maxDistance;
+    float      thickness;
+    float      maxRoughness;
+    float      intensity;
+    int        mode;       // 1 = SSR, 2 = SSR + RT fallback
+    uint32_t   frameIndex;
+};
 struct AtrousPush {
     glm::uvec2 screenSize;
     int        step;
@@ -311,6 +324,23 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         lci.bindingCount = 4;
         lci.pBindings = b;
         VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_atrousSetLayout));
+    }
+    // Reflect set (SSR): b0 normal(read) b1 specular(read) b2 directLight(read)
+    // b3 hdr copy (sampled) b4 hdr (read+write storage).
+    {
+        VkDescriptorSetLayoutBinding b[5]{};
+        for (uint32_t i = 0; i < 5; i++) {
+            b[i].binding = i;
+            b[i].descriptorType = (i == 3) ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                           : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        lci.bindingCount = 5;
+        lci.pBindings = b;
+        VK_CHECK(vkCreateDescriptorSetLayout(device, &lci, nullptr, &m_reflectSetLayout));
     }
     {
         // b0 = hdr sampled, b1 = bloom mip0 sampled.
@@ -719,6 +749,48 @@ void Renderer::init(VulkanEngine& eng, VkFormat swapchainFormat, VkFormat depthF
         cpi.layout = m_compositeLayout;
         VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_compositePipeline));
         vkDestroyShaderModule(device, comp, nullptr);
+    }
+
+    // ---- Reflect pipeline (compute, SSR) + its own descriptor pool/set ----
+    {
+        VkShaderModule comp = loadShaderModule(device, "shaders/reflect.comp", VK_SHADER_STAGE_COMPUTE_BIT);
+
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pc.size = sizeof(ReflectPush);
+        // set0 = scene (TLAS for the RT fallback), set1 = reflect images, set2 = DDGI
+        // sample (indirect at RT hit points).
+        VkDescriptorSetLayout sets[3] = {sceneSetLayout, m_reflectSetLayout, m_ddgiSampleSetLayout};
+        VkPipelineLayoutCreateInfo lci{};
+        lci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        lci.setLayoutCount = 3;
+        lci.pSetLayouts = sets;
+        lci.pushConstantRangeCount = 1;
+        lci.pPushConstantRanges = &pc;
+        VK_CHECK(vkCreatePipelineLayout(device, &lci, nullptr, &m_reflectLayout));
+
+        VkComputePipelineCreateInfo cpi{};
+        cpi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpi.stage.module = comp;
+        cpi.stage.pName = "main";
+        cpi.layout = m_reflectLayout;
+        VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpi, nullptr, &m_reflectPipeline));
+        vkDestroyShaderModule(device, comp, nullptr);
+
+        VkDescriptorPoolSize sizes[2]{};
+        sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          sizes[0].descriptorCount = 4;
+        sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[1].descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pci{};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets = 1; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+        VK_CHECK(vkCreateDescriptorPool(device, &pci, nullptr, &m_reflectPool));
+        VkDescriptorSetAllocateInfo dai{};
+        dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dai.descriptorPool = m_reflectPool; dai.descriptorSetCount = 1;
+        dai.pSetLayouts = &m_reflectSetLayout;
+        VK_CHECK(vkAllocateDescriptorSets(device, &dai, &m_reflectSet));
     }
 
     // ---- À-trous pipeline (compute, SVGF spatial shadow filter) ----
@@ -1223,8 +1295,12 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
                       extent, VK_IMAGE_ASPECT_COLOR_BIT, "Vis Image");
     m_hdr = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
                       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                       extent, VK_IMAGE_ASPECT_COLOR_BIT, "HDR Image");
+    // Post-composite HDR snapshot: SSR samples this (sampled) while writing m_hdr.
+    m_hdrCopy = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT,
+                          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                          extent, VK_IMAGE_ASPECT_COLOR_BIT, "HDR Copy (SSR)");
     for (int i = 0; i < 2; i++)
         m_shadowHist[i] = makeImage(eng, VK_FORMAT_R16G16B16A16_SFLOAT, // r=shadow g=depth b=ao
                                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1406,6 +1482,17 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
     add(m_compositeSetB, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
     add(m_compositeSetB, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOut2Store);
     add(m_compositeSetB, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &hdrStore);
+    // Reflect (SSR): normal + specular + directLight (read), hdr copy (sampled),
+    // hdr (read+write). hdrCopySamp declared below alongside the other samplers.
+    VkDescriptorImageInfo hdrCopySamp{};
+    hdrCopySamp.sampler = m_hdrSampler;
+    hdrCopySamp.imageView = m_hdrCopy.view;
+    hdrCopySamp.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    add(m_reflectSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &normStore);
+    add(m_reflectSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &specStore);
+    add(m_reflectSet, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &directStore);
+    add(m_reflectSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hdrCopySamp);
+    add(m_reflectSet, 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &hdrStore);
     // À-trous ping-pong: set[0] shadowOut->shadowOut2, set[1] shadowOut2->shadowOut.
     add(m_atrousSet[0], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOutStore);
     add(m_atrousSet[0], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowOut2Store);
@@ -1516,6 +1603,7 @@ void Renderer::createTargets(VulkanEngine& eng, VkExtent2D extent, VkExtent2D di
 void Renderer::destroyTargets(VulkanEngine& eng) {
     destroyImage(eng.allocator(), eng.device(), m_vis);
     destroyImage(eng.allocator(), eng.device(), m_hdr);
+    destroyImage(eng.allocator(), eng.device(), m_hdrCopy);
     destroyImage(eng.allocator(), eng.device(), m_shadowHist[0]);
     destroyImage(eng.allocator(), eng.device(), m_shadowHist[1]);
     destroyImage(eng.allocator(), eng.device(), m_motion);
@@ -1553,6 +1641,10 @@ void Renderer::destroy(VulkanEngine& eng) {
     if (m_compositeLayout) vkDestroyPipelineLayout(device, m_compositeLayout, nullptr);
     if (m_atrousPipeline) vkDestroyPipeline(device, m_atrousPipeline, nullptr);
     if (m_atrousLayout) vkDestroyPipelineLayout(device, m_atrousLayout, nullptr);
+    if (m_reflectPipeline) vkDestroyPipeline(device, m_reflectPipeline, nullptr);
+    if (m_reflectLayout) vkDestroyPipelineLayout(device, m_reflectLayout, nullptr);
+    if (m_reflectSetLayout) vkDestroyDescriptorSetLayout(device, m_reflectSetLayout, nullptr);
+    if (m_reflectPool) vkDestroyDescriptorPool(device, m_reflectPool, nullptr);
     if (m_tonemapPipeline) vkDestroyPipeline(device, m_tonemapPipeline, nullptr);
     if (m_tonemapLayout) vkDestroyPipelineLayout(device, m_tonemapLayout, nullptr);
     if (m_resolveSetLayout) vkDestroyDescriptorSetLayout(device, m_resolveSetLayout, nullptr);
@@ -1977,6 +2069,67 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         CompositePush cp{glm::uvec2(extent.width, extent.height)};
         vkCmdPushConstants(cmd, m_compositeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(CompositePush), &cp);
+        vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+        m_eng->cmdEndLabel(cmd);
+    }
+
+    // ===================== Pass B3: Reflections (SSR) =====================
+    // Snapshot the lit HDR, march reflected rays in screen space, add reflections
+    // back into HDR. Runs before fog/transparent so reflections get fogged and glass
+    // composites over them.
+    if (settings.reflectionsMode > 0 && !settings.debugMotionVecs) {
+        TracyVkZone(tracy, cmd, "Reflect");
+        m_eng->cmdBeginLabel(cmd, "Reflect Pass (SSR)");
+        // Copy post-composite HDR -> hdrCopy (SSR samples the copy while writing hdr).
+        imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        imgBarrier(cmd, m_hdrCopy.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkImageCopy region{};
+        region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.extent = {extent.width, extent.height, 1};
+        vkCmdCopyImage(cmd, m_hdr.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       m_hdrCopy.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        // hdrCopy -> sampled, hdr -> GENERAL (storage read+write).
+        imgBarrier(cmd, m_hdrCopy.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        imgBarrier(cmd, m_hdr.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+        // G-buffer guides: resolve wrote them -> reflect reads them.
+        for (VkImage g : {m_gbufNormal.image, m_gbufSpecular.image, m_directLight.image})
+            imgBarrier(cmd, g, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                       VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_reflectPipeline);
+        VkDescriptorSet rsets[3] = {scene.descriptorSet, m_reflectSet, m_ddgiSampleSet};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_reflectLayout,
+                                0, 3, rsets, 0, nullptr);
+        ReflectPush rp{};
+        rp.viewProj = jitteredVP;            // match the jittered raster the G-buffer used
+        rp.invViewProj = glm::inverse(jitteredVP);
+        rp.cameraPos = glm::vec4(cameraPos, 1.0f);
+        rp.screenSize = glm::uvec2(extent.width, extent.height);
+        rp.steps = settings.ssrSteps;
+        rp.maxDistance = settings.ssrMaxDistance;
+        rp.thickness = settings.ssrThickness;
+        rp.maxRoughness = settings.ssrMaxRoughness;
+        rp.intensity = settings.reflectionIntensity;
+        rp.mode = settings.reflectionsMode;
+        rp.frameIndex = frame;
+        vkCmdPushConstants(cmd, m_reflectLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(ReflectPush), &rp);
         vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
         m_eng->cmdEndLabel(cmd);
     }

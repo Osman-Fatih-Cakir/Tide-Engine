@@ -57,6 +57,15 @@ struct Settings {
     float aoIntensity = 1.0f;   // strength (0 = no effect, >1 exaggerates)
     float aoBias      = 0.02f;  // ray origin offset along N (self-occlusion fix, world units)
 
+    // Reflections — screen-space reflections on opaque surfaces (transparents do not
+    // reflect). Faded by roughness; near-mirror surfaces reflect strongest.
+    int   reflectionsMode    = 2;     // 0 Off, 1 SSR, 2 SSR + RT fallback, 3 RT only
+    int   ssrSteps           = 48;    // screen-space march samples
+    float ssrMaxDistance     = 30.0f; // world-space march length
+    float ssrThickness       = 0.5f;  // depth-test tolerance (linear depth units)
+    float ssrMaxRoughness    = 0.6f;  // skip reflections above this (diffuse-dominated)
+    float reflectionIntensity= 1.0f;  // master reflection multiplier
+
     // TAA / DLSS pipeline foundation.
     bool  taaJitter       = false;  // sub-pixel Halton jitter — auto-forced on when DLSS is active
     bool  debugMotionVecs = false;  // show motion vectors instead of shaded color
