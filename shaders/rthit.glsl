@@ -54,6 +54,11 @@ vec3 traceReflection(vec3 origin, vec3 dir, float maxDist) {
     // Indirect: the DDGI irradiance arriving at the hit (params.y = GI intensity).
     radiance += albedo * ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, hitP, N)
               * ddgi.params.y;
+    // Emissive: reflected emissive surfaces glow in the reflection (misc.w = intensity).
+    vec3 emissive = m.emissiveFactor.rgb;
+    if (m.emissiveTexture >= 0)
+        emissive *= textureLod(textures[nonuniformEXT(m.emissiveTexture)], uv, 0.0).rgb;
+    radiance += emissive * ddgi.misc.w;
     return radiance;
 }
 

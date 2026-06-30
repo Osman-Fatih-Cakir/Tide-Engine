@@ -59,13 +59,17 @@ struct Settings {
 
     // Reflections — screen-space reflections on opaque surfaces (transparents do not
     // reflect). Faded by roughness; near-mirror surfaces reflect strongest.
-    int   reflectionsMode    = 2;     // 0 Off, 1 SSR, 2 SSR + RT fallback, 3 RT only
-    int   ssrSteps           = 48;    // screen-space march samples
+    int   reflectionsMode    = 3;     // 0 Off, 1 SSR, 2 SSR + RT fallback, 3 RT only
+    int   ssrSteps           = 128;    // screen-space march samples
     float ssrMaxDistance     = 30.0f; // world-space march length
-    float ssrThickness       = 0.5f;  // depth-test tolerance (linear depth units)
+    float ssrThickness       = 0.3f;  // depth-test tolerance (linear depth units)
     float ssrMaxRoughness    = 0.6f;  // skip reflections above this (diffuse-dominated)
     float reflectionIntensity= 1.0f;  // master reflection multiplier
     float glassFresnel       = 0.3f;  // how much grazing Fresnel firms up glass opacity
+
+    // Emissive — glTF emissiveFactor/emissiveTexture added to HDR (glow + bloom),
+    // and emitted at RT/DDGI hits so emissive surfaces light the scene and reflect.
+    float emissiveIntensity  = 1.0f;  // global multiplier on material emissive
 
     // TAA / DLSS pipeline foundation.
     bool  taaJitter       = false;  // sub-pixel Halton jitter — auto-forced on when DLSS is active

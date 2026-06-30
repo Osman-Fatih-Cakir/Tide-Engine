@@ -110,13 +110,16 @@ void Scene::build(VulkanEngine& eng, const MeshData& data) {
 void Scene::buildTexturesAndDescriptors(VulkanEngine& eng, const MeshData& data) {
     VkDevice device = eng.device();
 
-    // Upload all textures. Color data (baseColor) is sRGB; everything else
+    // Upload all textures. Color data (baseColor, emissive) is sRGB; everything else
     // (normal / ORM / metalRough) is linear. Decide per image from material usage.
     textureCount = (uint32_t)data.textures.size();
     std::vector<bool> srgb(textureCount, false);
-    for (const auto& m : data.materials)
+    for (const auto& m : data.materials) {
         if (m.baseColorTexture >= 0 && m.baseColorTexture < (int)textureCount)
             srgb[m.baseColorTexture] = true;
+        if (m.emissiveTexture >= 0 && m.emissiveTexture < (int)textureCount)
+            srgb[m.emissiveTexture] = true;
+    }
 
     textures.reserve(textureCount);
     for (uint32_t i = 0; i < textureCount; i++) {

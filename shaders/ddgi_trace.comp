@@ -16,7 +16,8 @@ struct GpuMaterial {
     vec4  baseColorFactor;
     int   baseColorTexture; int normalTexture; int metalRoughTexture; int occlusionTexture;
     float metallicFactor; float roughnessFactor; float occlusionStrength; float alphaCutoff;
-    int   alphaMode; int pad0; int pad1; int pad2;
+    int   alphaMode; int emissiveTexture; int pad0; int pad1;
+    vec4  emissiveFactor;
 };
 struct Vertex { vec3 position; vec3 normal; vec2 uv; vec4 tangent; };
 struct GpuInstance { mat4 transform; uint geometryID; uint pad0; uint pad1; uint pad2; };
@@ -125,6 +126,12 @@ void main() {
             if (ddgi.misc.z > 0.0)
                 radiance += albedo * ddgiSampleIrradiance(ddgiIrradiance, ddgiDepth, ddgi, hitP, N)
                           * ddgi.misc.z;
+            // Emissive surfaces act as light sources: probes pick this up and the grid
+            // bleeds it into the scene as indirect illumination (misc.w = intensity).
+            vec3 emissive = m.emissiveFactor.rgb;
+            if (m.emissiveTexture >= 0)
+                emissive *= textureLod(textures[nonuniformEXT(m.emissiveTexture)], uv, 0.0).rgb;
+            radiance += emissive * ddgi.misc.w;
             dist = t;
         }
     }

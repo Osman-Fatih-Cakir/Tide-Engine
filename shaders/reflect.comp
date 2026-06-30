@@ -20,7 +20,8 @@ struct GpuMaterial {
     vec4  baseColorFactor;
     int   baseColorTexture; int normalTexture; int metalRoughTexture; int occlusionTexture;
     float metallicFactor; float roughnessFactor; float occlusionStrength; float alphaCutoff;
-    int   alphaMode; int pad0; int pad1; int pad2;
+    int   alphaMode; int emissiveTexture; int pad0; int pad1;
+    vec4  emissiveFactor;
 };
 struct Vertex { vec3 position; vec3 normal; vec2 uv; vec4 tangent; };
 struct GpuInstance { mat4 transform; uint geometryID; uint pad0; uint pad1; uint pad2; };

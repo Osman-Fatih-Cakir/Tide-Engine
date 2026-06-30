@@ -23,9 +23,10 @@ struct GpuMaterial {
     float occlusionStrength = 1.0f;
     float alphaCutoff       = 0.5f;
     int   alphaMode = 0;            // 0 = OPAQUE, 1 = MASK, 2 = BLEND
+    int   emissiveTexture = -1;    // glTF emissive map (sRGB); -1 = none
     int   _pad0 = 0;
     int   _pad1 = 0;
-    int   _pad2 = 0;
+    glm::vec4 emissiveFactor = glm::vec4(0.0f); // rgb = KHR emissiveFactor, a unused
 };
 
 // glTF alpha modes (matches GpuMaterial::alphaMode).

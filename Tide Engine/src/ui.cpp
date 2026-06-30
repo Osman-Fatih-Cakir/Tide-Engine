@@ -232,6 +232,12 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
                               "0 = opacity unchanged; 1 = edges go fully mirror-opaque.");
     }
 
+    ImGui::SeparatorText("Emissive");
+    ImGui::SliderFloat("Intensity##emissive", &s.emissiveIntensity, 0.0f, 10.0f, "%.2f");
+    ImGui::SetItemTooltip("Global multiplier on material emissiveFactor/emissiveTexture.\n"
+                          "Emissive surfaces glow (feeding bloom), light the scene via DDGI,\n"
+                          "and appear in reflections. 0 = emissive off.");
+
     ImGui::SeparatorText("Volumetric Fog");
     ImGui::Checkbox("Fog enabled", &s.fogEnabled);
     ImGui::SetItemTooltip("Job: the froxel volumetric god-ray pipeline (scatter -> integrate -> apply).\n"

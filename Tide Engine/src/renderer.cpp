@@ -1852,7 +1852,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         dp.shadowCfg   = glm::vec4(0.0f, 0.0f, settings.shadowsEnabled ? 1.0f : 0.0f, maxDist);
         // misc: x = use GI in resolve, y = sky GI strength, z = multi-bounce gain.
         dp.misc        = glm::vec4(giOn ? 1.0f : 0.0f, settings.giSkyIntensity,
-                                   settings.giMultiBounce, 0.0f);
+                                   settings.giMultiBounce, settings.emissiveIntensity);
         memcpy(m_ddgiUbo.mapped, &dp, sizeof(dp));
 
         if (giOn) {

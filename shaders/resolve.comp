@@ -23,9 +23,10 @@ struct GpuMaterial {
     float occlusionStrength;
     float alphaCutoff;
     int   alphaMode;
+    int   emissiveTexture;
     int   pad0;
     int   pad1;
-    int   pad2;
+    vec4  emissiveFactor;
 };
 struct Vertex { vec3 position; vec3 normal; vec2 uv; vec4 tangent; };
 struct GpuInstance {
@@ -238,6 +239,13 @@ void main() {
         N = normalize(mat3(T, B, N) * nt);
     }
 
+    // Emissive: surface self-illumination (factor * optional sRGB map), scaled by the
+    // global emissive intensity (ddgi.misc.w). Added straight into HDR -> bloom glow.
+    vec3 emissive = m.emissiveFactor.rgb;
+    if (m.emissiveTexture >= 0)
+        emissive *= textureGrad(textures[nonuniformEXT(m.emissiveTexture)], tuv, dUVdx, dUVdy).rgb;
+    emissive *= ddgi.misc.w;
+
     vec3 L = normalize(pc.sunDir.xyz);
 
     float shadow = 1.0;
@@ -311,7 +319,7 @@ void main() {
     }
     imageStore(directLightImage, pix, vec4(direct, curW)); // .a = linear depth for à-trous edge-stop
     imageStore(shadowOutImage,   pix, vec4(shadow, rtao, 0.0, 0.0)); // r=shadow, g=rtao
-    imageStore(hdrImage,         pix, vec4(ambient, 1.0));
+    imageStore(hdrImage,         pix, vec4(ambient + emissive, 1.0));
 
     if (pc.jitter.z > 0.5)             // debug: visualize motion (composite skipped on CPU)
         imageStore(hdrImage, pix, vec4(motion * 20.0 + 0.5, 0.5, 1.0));

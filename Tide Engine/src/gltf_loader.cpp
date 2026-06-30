@@ -201,6 +201,11 @@ bool loadGltf(const char* path, MeshData& out) {
             else if (m.alphaMode == "MASK") gm.alphaMode = ALPHA_MASK;
             else                            gm.alphaMode = ALPHA_OPAQUE;
             gm.alphaCutoff = (float)m.alphaCutoff;
+            // Emissive (KHR core): factor (linear) and optional sRGB map.
+            if (m.emissiveFactor.size() == 3)
+                gm.emissiveFactor = glm::vec4(m.emissiveFactor[0], m.emissiveFactor[1],
+                                              m.emissiveFactor[2], 0.0f);
+            gm.emissiveTexture = srcImage(m.emissiveTexture.index);
             out.materials.push_back(gm);
         }
     }

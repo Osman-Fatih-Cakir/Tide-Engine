@@ -22,9 +22,10 @@ struct GpuMaterial {
     float occlusionStrength;
     float alphaCutoff;
     int   alphaMode;
+    int   emissiveTexture;
     int   pad0;
     int   pad1;
-    int   pad2;
+    vec4  emissiveFactor;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Materials { GpuMaterial materials[]; };
@@ -131,6 +132,12 @@ void main() {
     vec3 F   = fresnelSchlickRoughness(ndv, F0, roughness);
     vec2 ab  = envBRDFApprox(ndv, roughness);
     color   += envSpec * (F0 * ab.x + ab.y);
+
+    // Emissive self-illumination (factor * optional map), global-scaled by ddgi.misc.w.
+    vec3 emissive = m.emissiveFactor.rgb;
+    if (m.emissiveTexture >= 0)
+        emissive *= texture(textures[nonuniformEXT(m.emissiveTexture)], vUV).rgb;
+    color += emissive * ddgi.misc.w;
 
     // Fresnel-driven opacity: glass turns more mirror-like (opaque) at grazing angles
     // and stays transmissive head-on. Use the dielectric grazing term (not the full F,
