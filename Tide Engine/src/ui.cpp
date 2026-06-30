@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <unordered_map>
 
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
@@ -150,15 +152,30 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     ImGui::Checkbox("VSync", &s.vsync);
     ImGui::SetItemTooltip("On: FIFO (locked to refresh). Off: IMMEDIATE (uncapped, may tear).");
     ImGui::Checkbox("Frame graph", &s.showFrameGraph);
-    ImGui::SetNextItemWidth(150.0f);
-    dragI("Graph Hz", &s.frameGraphHz, 1, 60);
-    ImGui::SetItemTooltip("Graph samples per second.");
-    ImGui::SetNextItemWidth(150.0f);
-    dragF("Graph Max", &s.frameGraphMaxMs, 2.0f, 200.0f, "%.3f ms");
-    ImGui::SetItemTooltip("Fixed Y-axis top of the frame-time graph.");
+    if (s.showFrameGraph) {
+        ImGui::SetNextItemWidth(150.0f);
+        dragI("Graph Hz", &s.frameGraphHz, 1, 60);
+        ImGui::SetItemTooltip("Graph samples per second.");
+        ImGui::SetNextItemWidth(150.0f);
+        dragF("Graph Max", &s.frameGraphMaxMs, 2.0f, 200.0f, "%.3f ms");
+        ImGui::SetItemTooltip("Fixed Y-axis top of the frame-time graph.");
+    }
 
-    ImGui::SeparatorText("Sun");
-    ImGui::PushItemWidth(150.0f); // fixed slider width
+    // Collapsible sections: a tiny [+]/[-] button inline with each separator title.
+    // State is transient (defaults closed, resets each launch, never written to disk).
+    static std::unordered_map<std::string, bool> sectionOpen;
+    auto section = [&](const char* label) -> bool {
+        bool& open = sectionOpen[label];
+        ImGui::PushID(label);
+        if (ImGui::SmallButton(open ? "-" : "+")) open = !open;
+        ImGui::PopID();
+        ImGui::SameLine();
+        ImGui::SeparatorText(label);
+        return open;
+    };
+
+    ImGui::PushItemWidth(150.0f); // fixed slider width for all section sliders
+    if (section("Sun")) {
     ImGui::Checkbox("Animate", &s.sunAnimate);
     if (s.sunAnimate) {
         // Min/max bounds shown side by side; azimuth and elevation each on one row.
@@ -181,7 +198,8 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     ImGui::SetItemTooltip("Sun light tint. Warm/orange for sunset, dim blue for night.");
     dragF("Ambient",   &s.ambient,         0.0f, 1.0f);
 
-    ImGui::SeparatorText("Sky");
+    }
+    if (section("Sky")) {
     dragF("Brightness##sky", &s.skyIntensity, 0.0f, 4.0f);
     ImGui::SetItemTooltip("Overall sky brightness (visible sky + GI sky term). 0 = black night sky.");
     ImGui::ColorEdit3("Zenith",  &s.skyZenith.x);
@@ -191,13 +209,15 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     ImGui::ColorEdit3("Horizon", &s.skyHorizon.x);
     ImGui::SetItemTooltip("Warm band toward the sun (sunset glow).");
 
-    ImGui::SeparatorText("Shadows (RT)");
+    }
+    if (section("Shadows (RT)")) {
     ImGui::Checkbox("Enabled", &s.shadowsEnabled);
     dragF("Softness", &s.sunAngularSize, 0.0f, 5.0f, "%.3f deg");
     dragI("Samples",    &s.shadowSamples,  1, 16);
 
+    }
     // ---- Denoiser / AA: one selector; only the active mode's params are shown. ----
-    ImGui::SeparatorText("Denoiser / AA");
+    if (section("Denoiser / AA")) {
     ImGui::TextDisabled("(?)");
     ImGui::SetItemTooltip("Temporal/SVGF denoise shadows and AO only. They do not cover\n"
                           "reflections; GI has its own heuristic denoise approach.\n"
@@ -234,7 +254,8 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     }
     ImGui::Checkbox("Debug: motion vectors", &s.debugMotionVecs);
 
-    ImGui::SeparatorText("Ambient Occlusion (RTAO)");
+    }
+    if (section("Ambient Occlusion (RTAO)")) {
     ImGui::Checkbox("AO enabled", &s.aoEnabled);
     ImGui::SetItemTooltip("Ray-traced AO against the scene TLAS. Darkens the ambient/indirect\n"
                           "term in corners and contact points. Off = ambient unmodified.\n"
@@ -251,7 +272,8 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
         ImGui::SetItemTooltip("Ray origin offset along the normal (fixes self-occlusion acne).");
     }
 
-    ImGui::SeparatorText("Reflections (SSR)");
+    }
+    if (section("Reflections")) {
     const char* reflModes[] = {"Off", "SSR", "SSR + RT", "RT only"};
     ImGui::Combo("Mode##refl", &s.reflectionsMode, reflModes, IM_ARRAYSIZE(reflModes));
     ImGui::SetItemTooltip("Reflections on opaque surfaces. SSR reflects the lit scene visible on\n"
@@ -279,13 +301,15 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
                               "0 = opacity unchanged; 1 = edges go fully mirror-opaque.");
     }
 
-    ImGui::SeparatorText("Emissive");
-    dragF("Intensity##emissive", &s.emissiveIntensity, 0.0f, 10.0f);
+    }
+    if (section("Emissive")) {
+    dragF("Intensity##emissive", &s.emissiveIntensity, 0.0f, 100.0f);
     ImGui::SetItemTooltip("Global multiplier on material emissiveFactor/emissiveTexture.\n"
                           "Emissive surfaces glow (feeding bloom), light the scene via DDGI,\n"
                           "and appear in reflections. 0 = emissive off.");
 
-    ImGui::SeparatorText("Volumetric Fog");
+    }
+    if (section("Volumetric Fog")) {
     ImGui::Checkbox("Fog enabled", &s.fogEnabled);
     ImGui::SetItemTooltip("Job: the froxel volumetric god-ray pipeline (scatter -> integrate -> apply).\n"
                           "Result: light shafts in the air. Off = scene renders exactly as before.");
@@ -365,7 +389,8 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
         }
     }
 
-    ImGui::SeparatorText("Global Illumination (DDGI)");
+    }
+    if (section("Global Illumination (DDGI)")) {
     ImGui::Checkbox("GI enabled", &s.giEnabled);
     ImGui::SetItemTooltip("Job: real diffuse indirect light (DDGI probe grid) replaces the flat ambient.\n"
                           "Result: sunlight bounces off floor/walls and lights shadowed areas with color.\n"
@@ -435,7 +460,8 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
                               "grid inside the room walls; the spheres show where the probes land.");
     }
 
-    ImGui::SeparatorText("Tonemap");
+    }
+    if (section("Tonemap")) {
     const char* tonemappers[] = {"ACES (filmic)", "AgX"};
     ImGui::Combo("Curve", &s.tonemapper, tonemappers, IM_ARRAYSIZE(tonemappers));
     ImGui::SetItemTooltip("ACES: punchy/contrasty, but hue-shifts bright saturated colors\n"
@@ -444,7 +470,8 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
                           "for the bright volumetric/GI look; slightly softer contrast.");
     dragF("Exposure",  &s.exposure,        0.1f, 200.0f);
 
-    ImGui::SeparatorText("Bloom");
+    }
+    if (section("Bloom")) {
     ImGui::Checkbox("Bloom enabled", &s.bloomEnabled);
     ImGui::SetItemTooltip("Energy-conserving HDR bloom (COD/Jimenez dual-filter mip chain).\n"
                           "Bright highlights (god rays, sun, GI) bleed light into surroundings.");
@@ -461,16 +488,17 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
             ImGui::SetItemTooltip("Soft-knee width around the threshold (smoother roll-in).");
         }
     }
+    }
     ImGui::PopItemWidth();
 
-    // ---- Camera ----
-    ImGui::SeparatorText("Camera");
+    // ---- Camera (lens + flythrough path) ----
+    if (section("Camera")) {
     ImGui::SetNextItemWidth(150.0f);
     dragF("FOV", &cam.fovDeg, 30.0f, 120.0f, "%.3f deg");
     ImGui::SetItemTooltip("Vertical field of view. Higher = wider angle (more in frame, stronger perspective).");
 
-    // ---- Camera path: capture waypoints, reorder/delete, play a flythrough. ----
-    ImGui::SeparatorText("Camera Path");
+    // Flythrough path: capture waypoints, reorder/delete, play a flythrough.
+    ImGui::SeparatorText("Path");
     ImGui::BeginDisabled(camPlaying); // no editing mid-playback
     if (ImGui::Button("Add") && s.camPathCount < kMaxWaypoints) {
         CamWaypoint& w = s.camPath[s.camPathCount++];
@@ -533,6 +561,7 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     ImGui::EndDisabled();
     if (s.camPathCount < 2)
         ImGui::SetItemTooltip("Add at least 2 points to play a flythrough.");
+    }
 
     ImGui::End();
 

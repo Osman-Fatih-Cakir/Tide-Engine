@@ -36,7 +36,7 @@ struct Settings {
 
     // Bloom (physically-based, energy-conserving — COD/Jimenez dual-filter mip chain).
     bool  bloomEnabled    = true;
-    float bloomIntensity  = 0.064f; // lerp(scene, bloom) blend factor (0..1; ~physical at 0.04)
+    float bloomIntensity  = 0.03f; // lerp(scene, bloom) blend factor (0..1; ~physical at 0.04)
     float bloomRadius     = 1.75f;  // upsample tent filter spread (mip blend "scatter")
     float bloomThreshold  = 0.04f;  // soft-knee bright-pass threshold (0 = thresholdless/pure PBR)
     float bloomKnee       = 0.5f;   // soft-knee width around the threshold
@@ -72,7 +72,7 @@ struct Settings {
     float ssrMaxDistance     = 30.0f; // world-space march length
     float ssrThickness       = 0.3f;  // depth-test tolerance (linear depth units)
     float ssrMaxRoughness    = 0.6f;  // skip reflections above this (diffuse-dominated)
-    float reflectionIntensity= 1.0f;  // master reflection multiplier
+    float reflectionIntensity= 0.3f;  // master reflection multiplier
     float glassFresnel       = 0.3f;  // how much grazing Fresnel firms up glass opacity
 
     // Emissive — glTF emissiveFactor/emissiveTexture added to HDR (glow + bloom),
@@ -118,11 +118,11 @@ struct Settings {
     // Realtime GI — DDGI. World-space probe grid + octahedral irradiance/depth
     // atlas, sampled in resolve.comp to replace the flat ambient term.
     bool  giEnabled    = true;
-    float giIntensity  = 2.0f;  // indirect irradiance multiplier (0 = old flat ambient)
+    float giIntensity  = 1.0f;  // indirect irradiance multiplier (0 = old flat ambient)
     float giHysteresis = 0.988f; // probe temporal blend (higher = stabler, slower to react)
     int   giRaysPerProbe = 64;  // rays traced per probe per frame (<= 128)
     float giNormalBias = 0.15f; // shading-point offset along N (self-occlusion fix, world units)
-    float giSkyIntensity = 2.0f; // sky/env contribution on ray miss (procedural sky uncalibrated)
+    float giSkyIntensity = 1.0f; // sky/env contribution on ray miss (procedural sky uncalibrated)
     float giMultiBounce  = 1.0f; // multi-bounce feedback gain (1 = physical, >1 exaggerates)
     int   giProbesX = 16, giProbesY = 8, giProbesZ = 16; // grid resolution (recreate)
     bool  giRelocation = true;   // slide probes out of geometry into open space (off = grid-fixed)
