@@ -693,7 +693,7 @@ void VulkanEngine::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
                 glm::vec3 center = (m_scene.boundsMin + m_scene.boundsMax) * 0.5f;
                 // Shrink slightly so the outermost probes land inside the bounds rather
                 // than exactly on the surfaces, which reduces light leaking.
-                const glm::vec3 fit(0.8f, 0.8f, 0.8f);
+                const glm::vec3 fit(0.9f, 0.9f, 0.9f);
                 glm::vec3 size = ext * fit;
                 m_settings.giGridMin = center - size * 0.5f;
                 m_settings.giGridMax = center + size * 0.5f;
