@@ -33,4 +33,21 @@ vec3 cookTorrance(vec3 N, vec3 V, vec3 L, vec3 albedo,
     return (diffuse + spec) * sunColor * NdotL;
 }
 
+// Roughness-aware Schlick Fresnel: rough surfaces lose their grazing rim (clamps the
+// reflectance ceiling to max(1-roughness, F0) instead of 1).
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+    vec3 fmax = max(vec3(1.0 - roughness), F0);
+    return F0 + (fmax - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Split-sum environment BRDF (Karis/Lazarov analytic approximation of the DFG LUT).
+// Returns (scale, bias): specular IBL = prefilteredColor * (F0 * scale + bias).
+vec2 envBRDFApprox(float NoV, float roughness) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+    vec4 r = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
 #endif

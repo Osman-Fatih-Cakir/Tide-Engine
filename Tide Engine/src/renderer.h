@@ -129,6 +129,16 @@ private:
     VkDescriptorSet       m_compositeSet       = VK_NULL_HANDLE; // shadow from shadowOut
     VkDescriptorSet       m_compositeSetB      = VK_NULL_HANDLE; // shadow from shadowOut2
 
+    // Reflections: SSR pass between composite and fog/transparent. Reads the G-buffer
+    // (normal+rough, specular F0, directLight.a depth) + a copy of the lit HDR, marches
+    // reflected rays in screen space, adds the result to HDR.
+    Image                 m_hdrCopy{};         // RGBA16F snapshot of post-composite HDR (SSR color source)
+    VkPipeline            m_reflectPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout      m_reflectLayout   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_reflectSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet       m_reflectSet       = VK_NULL_HANDLE;
+    VkDescriptorPool      m_reflectPool      = VK_NULL_HANDLE;
+
     // Tonemap pass (fullscreen fragment): set0 = { hdr sampled }.
     VkPipeline            m_tonemapPipeline = VK_NULL_HANDLE;
     VkPipelineLayout      m_tonemapLayout   = VK_NULL_HANDLE;

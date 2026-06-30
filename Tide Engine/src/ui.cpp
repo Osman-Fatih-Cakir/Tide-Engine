@@ -199,6 +199,24 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
         ImGui::SetItemTooltip("Ray origin offset along the normal (fixes self-occlusion acne).");
     }
 
+    ImGui::SeparatorText("Reflections (SSR)");
+    const char* reflModes[] = {"Off", "SSR"};
+    ImGui::Combo("Mode##refl", &s.reflectionsMode, reflModes, IM_ARRAYSIZE(reflModes));
+    ImGui::SetItemTooltip("Screen-space reflections on opaque surfaces. Reflects the lit scene\n"
+                          "that is visible on screen; off-screen rays miss (RT fallback is a\n"
+                          "later iteration). Transparents do not reflect.");
+    if (s.reflectionsMode > 0) {
+        ImGui::SliderInt("SSR steps",        &s.ssrSteps,        8, 128);
+        ImGui::SetItemTooltip("Screen-space march samples. More = catches farther/grazing hits, costs more.");
+        ImGui::SliderFloat("SSR distance",   &s.ssrMaxDistance,  2.0f, 100.0f, "%.0f");
+        ImGui::SetItemTooltip("World-space length of the reflected ray march.");
+        ImGui::SliderFloat("SSR thickness",  &s.ssrThickness,    0.05f, 2.0f, "%.2f");
+        ImGui::SetItemTooltip("Depth-test tolerance. Too small = reflections drop out; too large = smears.");
+        ImGui::SliderFloat("Max roughness",  &s.ssrMaxRoughness, 0.05f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Skip reflections on surfaces rougher than this (DDGI covers diffuse).");
+        ImGui::SliderFloat("Intensity##refl",&s.reflectionIntensity, 0.0f, 2.0f, "%.2f");
+    }
+
     ImGui::SeparatorText("Volumetric Fog");
     ImGui::Checkbox("Fog enabled", &s.fogEnabled);
     ImGui::SetItemTooltip("Job: the froxel volumetric god-ray pipeline (scatter -> integrate -> apply).\n"
