@@ -150,11 +150,11 @@ void main() {
     }
 
     // Specular IBL: the hit color is the environment radiance, weighted by the
-    // split-sum environment BRDF so F0 and roughness scale the energy.
+    // split-sum environment BRDF. The DFG already integrates Fresnel, so it scales F0
+    // (not the full grazing Fresnel — that would double-count and blow out at grazing).
     float ndv = max(dot(N, V), 1e-4);
-    vec3  F  = fresnelSchlickRoughness(ndv, F0, roughness);
     vec2  ab = envBRDFApprox(ndv, roughness);
-    vec3  specIBL = hitColor * (F * ab.x + ab.y);
+    vec3  specIBL = hitColor * (F0 * ab.x + ab.y);
 
     vec3 refl = specIBL * (hitMask * pc.intensity);
     vec3 base = imageLoad(hdrImage, pix).rgb;
