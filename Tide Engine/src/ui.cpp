@@ -151,13 +151,18 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
 
     // ---- Denoiser / AA: one selector; only the active mode's params are shown. ----
     ImGui::SeparatorText("Denoiser / AA");
+    ImGui::TextDisabled("(?)");
+    ImGui::SetItemTooltip("Temporal/SVGF denoise shadows and AO only. They do not cover\n"
+                          "reflections; GI has its own heuristic denoise approach.\n"
+                          "DLSS RR is the general AA + denoise solution for shadows, AO,\n"
+                          "and reflections.");
     const char* denoisers[] = {"Off", "Temporal", "SVGF", "DLSS Ray Reconstruction"};
     ImGui::Combo("Mode##denoiser", &s.denoiser, denoisers, IM_ARRAYSIZE(denoisers));
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Off: raw noisy shadow.\n"
                           "Temporal: reproject + EMA (time only).\n"
                           "SVGF: temporal + edge-aware a-trous (time + space).\n"
-                          "DLSS RR: AI denoise + upscale (NGX, render at lower res).");
+                          "DLSS RR: AI denoise + upscale (NGX, render at lower res).\n");
     // Map the single selector to the engine-facing fields.
     s.dlssEnabled       = (s.denoiser == 3);
     s.shadowDenoiseMode = (s.denoiser <= 2) ? s.denoiser : 0;
