@@ -23,6 +23,14 @@ struct Settings {
     float sunAnimSpeed    = 0.2f;   // radians/sec of the sweep phase (lower = slower)
     float ambient         = 0.0f;
     float sunIntensity    = 4.0f;  // directional sun radiance multiplier
+    glm::vec3 sunTint     = glm::vec3(1.0f); // sun color tint (warm at sunset, blue at night)
+
+    // Procedural sky colors (drive the visible sky + GI sky term). Defaults match the
+    // original hardcoded daytime look; tweak for sunset/night.
+    glm::vec3 skyZenith   = glm::vec3(0.10f, 0.28f, 0.65f); // overhead color
+    glm::vec3 skyGround   = glm::vec3(0.16f, 0.30f, 0.15f); // below-horizon color
+    glm::vec3 skyHorizon  = glm::vec3(0.45f, 0.22f, 0.08f); // warm band toward the sun
+    float skyIntensity    = 1.0f;  // overall sky brightness (0 = black sky / night)
     float exposure        = 30.0f;  // tonemap exposure (manual)
     int   tonemapper      = 1;      // 0 = ACES filmic, 1 = AgX
 

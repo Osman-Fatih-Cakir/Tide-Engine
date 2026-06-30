@@ -135,6 +135,9 @@ struct DdgiParams {                 // matches the DdgiParams UBO in ddgi.glsl (
     glm::vec4  params;              // x=hysteresis y=intensity z=normalBias w=frame
     glm::vec4  shadowCfg;           // x=coneRad y=samples z=shadowsOn w=maxRayDist
     glm::vec4  misc;               // x = use GI in resolve (0/1)
+    glm::vec4  skyZenith;          // rgb = sky overhead color ; w = sky intensity
+    glm::vec4  skyGround;          // rgb = below-horizon color
+    glm::vec4  skyHorizon;         // rgb = warm horizon band toward the sun
 };
 struct DdgiUpdatePush { int mode; }; // 0 = irradiance atlas, 1 = depth atlas
 struct ProbeDebugPush { glm::mat4 viewProj; float radius; };
@@ -1845,7 +1848,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         dp.gridSpacing = glm::vec4(spacing, 0.0f);
         dp.gridCounts  = glm::ivec4(m_ddgiCounts, rays);
         dp.sunDir      = glm::vec4(sun, settings.ambient); // w = sky intensity on miss
-        dp.sunColor    = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+        dp.sunColor    = glm::vec4(settings.sunIntensity * settings.sunTint, 0.0f);
         dp.params      = glm::vec4(m_ddgiHaveHistory ? settings.giHysteresis : 0.0f,
                                    settings.giIntensity, settings.giNormalBias,
                                    (float)(frame & 0xFFFF));
@@ -1853,6 +1856,9 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         // misc: x = use GI in resolve, y = sky GI strength, z = multi-bounce gain.
         dp.misc        = glm::vec4(giOn ? 1.0f : 0.0f, settings.giSkyIntensity,
                                    settings.giMultiBounce, settings.emissiveIntensity);
+        dp.skyZenith   = glm::vec4(settings.skyZenith,  settings.skyIntensity);
+        dp.skyGround   = glm::vec4(settings.skyGround,  0.0f);
+        dp.skyHorizon  = glm::vec4(settings.skyHorizon, 0.0f);
         memcpy(m_ddgiUbo.mapped, &dp, sizeof(dp));
 
         if (giOn) {
@@ -1977,7 +1983,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
         push.prevViewProj = m_prevViewProj;  // unjittered previous frame
         push.cameraPos = glm::vec4(cameraPos, 1.0f);
         push.sunDir = glm::vec4(sun, settings.ambient);
-        push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+        push.sunColor = glm::vec4(settings.sunIntensity * settings.sunTint, 0.0f);
         push.shadowCfg = shadowCfg;
         push.temporal = temporal;
         // DLSS mip LOD bias: log2(renderRes/displayRes) (negative) keeps textures sharp
@@ -2169,7 +2175,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
             sp.prevViewProj = m_prevFogViewProj;
             sp.camPos = glm::vec4(cameraPos, 1.0f);
             sp.sunDir = glm::vec4(sun, 0.0f);
-            sp.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), 0.0f);
+            sp.sunColor = glm::vec4(settings.sunIntensity * settings.sunTint, 0.0f);
             sp.fog = glm::vec4(settings.fogDensity, settings.fogScatter,
                                settings.fogAnisotropy, settings.fogAmbient);
             sp.grid = grid;
@@ -2278,7 +2284,7 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
             push.model = inst.transform;
             push.cameraPos = glm::vec4(cameraPos, (float)g.materialIndex);
             push.sunDir = glm::vec4(sun, settings.ambient);
-            push.sunColor = glm::vec4(glm::vec3(settings.sunIntensity), settings.glassFresnel);
+            push.sunColor = glm::vec4(settings.sunIntensity * settings.sunTint, settings.glassFresnel);
             push.shadowCfg = shadowCfg;
             vkCmdPushConstants(cmd, m_transparentLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,

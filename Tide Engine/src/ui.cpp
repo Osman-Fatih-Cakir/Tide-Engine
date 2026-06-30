@@ -142,7 +142,19 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
         ImGui::SliderFloat("Elevation", &s.sunElevationDeg, -10.0f, 90.0f);
     }
     ImGui::SliderFloat("Intensity", &s.sunIntensity,    0.0f, 20.0f);
+    ImGui::ColorEdit3("Color##sun", &s.sunTint.x);
+    ImGui::SetItemTooltip("Sun light tint. Warm/orange for sunset, dim blue for night.");
     ImGui::SliderFloat("Ambient",   &s.ambient,         0.0f, 1.0f);
+
+    ImGui::SeparatorText("Sky");
+    ImGui::SliderFloat("Brightness##sky", &s.skyIntensity, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("Overall sky brightness (visible sky + GI sky term). 0 = black night sky.");
+    ImGui::ColorEdit3("Zenith",  &s.skyZenith.x);
+    ImGui::SetItemTooltip("Overhead sky color.");
+    ImGui::ColorEdit3("Ground",  &s.skyGround.x);
+    ImGui::SetItemTooltip("Below-horizon color.");
+    ImGui::ColorEdit3("Horizon", &s.skyHorizon.x);
+    ImGui::SetItemTooltip("Warm band toward the sun (sunset glow).");
 
     ImGui::SeparatorText("Shadows (RT)");
     ImGui::Checkbox("Enabled", &s.shadowsEnabled);

@@ -17,7 +17,7 @@ vec3 traceReflection(vec3 origin, vec3 dir, float maxDist) {
 
     if (rayQueryGetIntersectionTypeEXT(rq, true) ==
         gl_RayQueryCommittedIntersectionNoneEXT)
-        return skyColor(dir, normalize(ddgi.sunDir.xyz)) * ddgi.misc.y;
+        return SKY_COLOR_UBO(dir, normalize(ddgi.sunDir.xyz), ddgi) * ddgi.misc.y;
 
     uint instID = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
     uint primID = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));

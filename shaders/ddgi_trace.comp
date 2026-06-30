@@ -68,7 +68,7 @@ void main() {
     if (rayQueryGetIntersectionTypeEXT(rq, true) ==
         gl_RayQueryCommittedIntersectionNoneEXT) {
         // Miss -> sky radiance (misc.y = sky GI strength), "infinite" depth.
-        radiance = skyColor(dir, normalize(ddgi.sunDir.xyz)) * ddgi.misc.y;
+        radiance = SKY_COLOR_UBO(dir, normalize(ddgi.sunDir.xyz), ddgi) * ddgi.misc.y;
         dist = maxDist;
     } else {
         uint instID = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));

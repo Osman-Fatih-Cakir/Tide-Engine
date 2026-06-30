@@ -21,7 +21,10 @@ struct DdgiParams {
     vec4  sunColor;     // rgb = sun radiance
     vec4  params;       // x=hysteresis y=intensity z=normalBias w=frame
     vec4  shadowCfg;    // x=coneRad y=samples z=shadowsOn w=maxRayDist
-    vec4  misc;         // x=use GI in resolve (0/1)
+    vec4  misc;         // x=use GI in resolve (0/1) y=giSky z=multibounce w=emissive
+    vec4  skyZenith;    // rgb = sky overhead color ; w = sky intensity
+    vec4  skyGround;    // rgb = below-horizon color
+    vec4  skyHorizon;   // rgb = warm horizon band toward the sun
 };
 
 // ---- probe <-> world / atlas ----
