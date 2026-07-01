@@ -14,7 +14,11 @@ public:
     // dt = real wall-clock delta (timing/pacing). cpuMs = measured CPU work time
     // this frame (excludes VSync/fence idle) — what the graph/stats display.
     // camPlaying drives the Play/Stop label; playToggled is set when it's clicked.
+    // sceneReimport is set when the "Reimport with new scale" button is clicked.
+    // activeScene = current scene index; sceneSwitchTo is set to a new index when
+    // the user picks a different scene in the Scene section (else left as -1).
     void buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled,
+                    bool& sceneReimport, int activeScene, int& sceneSwitchTo,
                     float dt, float cpuMs);
     void render(VkCommandBuffer cmd);
     void destroy();

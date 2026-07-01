@@ -189,6 +189,7 @@ xcopy /Y /D "$(SolutionDir)Dependency\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dl
     <ClInclude Include="src\renderer.h" />
     <ClInclude Include="src\dlss.h" />
     <ClInclude Include="src\ui.h" />
+    <ClInclude Include="src\scene_list.h" />
     <ClInclude Include="src\settings.h" />
   </ItemGroup>
   <ItemGroup>

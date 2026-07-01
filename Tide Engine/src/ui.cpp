@@ -2,6 +2,7 @@
 #include "vk_engine.h"
 #include "settings.h"
 #include "camera.h"
+#include "scene_list.h"
 
 #include <algorithm>
 #include <cmath>
@@ -101,6 +102,7 @@ void Ui::beginFrame() {
 }
 
 void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled,
+                    bool& sceneReimport, int activeScene, int& sceneSwitchTo,
                     float dt, float cpuMs) {
     // Real frame time (dt) drives the FPS + graph; CPU work time (cpuMs) is a
     // separate readout. Refresh displayed numbers once per real second.
@@ -216,6 +218,13 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     dragI("Samples",    &s.shadowSamples,  1, 16);
 
     }
+    // Derive the engine-facing fields from the persisted `denoiser` selector EVERY
+    // frame (not inside the section body below): a collapsed section wouldn't run
+    // the mapping, so dlssEnabled/shadowDenoiseMode could be saved out of sync with
+    // denoiser and then not apply on the next launch until the section is opened.
+    s.dlssEnabled       = (s.denoiser == 3);
+    s.shadowDenoiseMode = (s.denoiser <= 2) ? s.denoiser : 0;
+
     // ---- Denoiser / AA: one selector; only the active mode's params are shown. ----
     if (section("Denoiser / AA")) {
     ImGui::TextDisabled("(?)");
@@ -230,10 +239,6 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
                           "Temporal: reproject + EMA (time only).\n"
                           "SVGF: temporal + edge-aware a-trous (time + space).\n"
                           "DLSS RR: AI denoise + upscale (NGX, render at lower res).\n");
-    // Map the single selector to the engine-facing fields.
-    s.dlssEnabled       = (s.denoiser == 3);
-    s.shadowDenoiseMode = (s.denoiser <= 2) ? s.denoiser : 0;
-
     if (s.denoiser == 1) {            // Temporal
         dragF("History", &s.shadowHistAlpha, 0.001f, 0.5f);
     } else if (s.denoiser == 2) {     // SVGF
@@ -561,6 +566,33 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     ImGui::EndDisabled();
     if (s.camPathCount < 2)
         ImGui::SetItemTooltip("Add at least 2 points to play a flythrough.");
+    }
+
+    if (section("Scene")) {
+    ImGui::SetNextItemWidth(150.0f);
+    dragF("Scale##scene", &s.sceneScale, 0.01f, 100.0f, "%.3f");
+    ImGui::SetItemTooltip("Uniform scale applied to the whole scene as a single root transform\n"
+                          "(absolute, relative to the original file). Use it to match the scene's\n"
+                          "world size to the engine tuning (fixes DDGI probes going wild / red on\n"
+                          "differently-scaled imports).");
+    if (ImGui::Button("Reimport with new scale"))
+        sceneReimport = true;
+    ImGui::SetItemTooltip("Reload the glTF and rebuild at the scale above (brief hitch).");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Active scene");
+    // One button per registered scene. Picking a different one requests a full
+    // engine restart (saves this scene's settings, opens the other's).
+    for (int i = 0; i < kSceneCount; ++i) {
+        bool isActive = (i == activeScene);
+        ImGui::BeginDisabled(isActive);
+        if (ImGui::Button(kScenes[i].name))
+            sceneSwitchTo = i;
+        ImGui::EndDisabled();
+        if (isActive) { ImGui::SameLine(); ImGui::TextDisabled("(current)"); }
+    }
+    ImGui::SetItemTooltip("Switch scenes: the engine restarts, saving this scene's\n"
+                          "settings to its own file and loading the other scene's.");
     }
 
     ImGui::End();

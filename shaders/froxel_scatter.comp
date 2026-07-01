@@ -24,11 +24,10 @@ layout(push_constant) uniform Push {
     mat4  prevViewProj;  // temporal reprojection
     vec4  camPos;        // xyz
     vec4  sunDir;        // xyz = dir to sun
-    vec4  sunColor;      // rgb = sun radiance
+    vec4  sunColor;      // rgb = sun radiance, w = jitterScale
     vec4  fog;           // x=density y=scatter z=anisotropy w=ambient
     uvec4 grid;          // xyz = froxel dims, w = frameIndex
     vec4  zRange;        // x=zn y=zf z=temporalAlpha w=reset
-    vec4  misc;          // x=jitterScale
     vec4  boxMin;        // xyz = local fog box min ; w = enable (0/1)
     vec4  boxMax;        // xyz = local fog box max ; w = edge softness (world units)
 } pc;
@@ -56,7 +55,7 @@ void main() {
     // accumulation then averages it into a smooth, anti-aliased shadow volume.
     uint js = (uint(c.x) * 1973u + uint(c.y) * 9277u + uint(c.z) * 26699u
                + pc.grid.w * 6151u + 1u);
-    vec3 jit = (vec3(rtHash(js), rtHash(js), rtHash(js)) - 0.5) * pc.misc.x;
+    vec3 jit = (vec3(rtHash(js), rtHash(js), rtHash(js)) - 0.5) * pc.sunColor.w;
     vec3 cell = vec3(c) + 0.5 + jit;
     vec3 P = froxelWorldPos(cell, dim, pc.invViewProj, pc.camPos.xyz, zn, zf);
 

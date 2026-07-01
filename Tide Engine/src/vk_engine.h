@@ -63,6 +63,13 @@ private:
     void initProfiler();
     void initImmediate();
     void loadScene();
+    void reimportScene(float scale); // reload the glTF, applying a root uniform scale
+
+public:
+    // Set by main.cpp's restart loop: a UI scene-switch requests a full engine
+    // teardown+reinit so the new scene loads from its own state file.
+    static bool consumeRestart(); // returns & clears the pending-restart flag
+private:
 
     // --- per-frame ---
     void drawFrame(float dt);
@@ -114,6 +121,7 @@ private:
 
     // --- scene ---
     Scene m_scene;
+    int   m_activeScene = 0; // index into kScenes; picks the glTF + state file
 
     // --- depth ---
     VkImage       m_depthImage = VK_NULL_HANDLE;
