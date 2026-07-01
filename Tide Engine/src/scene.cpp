@@ -30,6 +30,11 @@ static Buffer makeDeviceBuffer(VulkanEngine& eng, const void* src,
 }
 
 void Scene::build(VulkanEngine& eng, const MeshData& data) {
+    // Reset accumulating tables so build() is safe to call again (scene reimport).
+    opaqueInstances.clear();
+    transparentInstances.clear();
+    textures.clear();
+
     vertexCount   = (uint32_t)data.vertices.size();
     indexCount    = (uint32_t)data.indices.size();
     materialCount = (uint32_t)data.materials.size();

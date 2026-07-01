@@ -141,6 +141,11 @@ struct Settings {
     float camPathSpeed = 1.0f;     // world units/sec along the path
     bool  camPathLoop  = true;    // restart from the first waypoint at the end
 
+    // Uniform scene scale, applied at load as a single root transform (absolute,
+    // relative to the original glTF). Lets a scene's world size match the engine's
+    // world-unit tuning (DDGI relocation/normalBias, fog/AO radii).
+    float sceneScale      = 1.0f;
+
     bool  vsync           = true;  // FIFO when on; MAILBOX/IMMEDIATE when off
 
     // Frame-time graph.

@@ -101,7 +101,7 @@ void Ui::beginFrame() {
 }
 
 void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled,
-                    float dt, float cpuMs) {
+                    bool& sceneReimport, float dt, float cpuMs) {
     // Real frame time (dt) drives the FPS + graph; CPU work time (cpuMs) is a
     // separate readout. Refresh displayed numbers once per real second.
     m_acc += dt;
@@ -561,6 +561,18 @@ void Ui::buildPanel(Settings& s, Camera& cam, bool camPlaying, bool& playToggled
     ImGui::EndDisabled();
     if (s.camPathCount < 2)
         ImGui::SetItemTooltip("Add at least 2 points to play a flythrough.");
+    }
+
+    if (section("Scene")) {
+    ImGui::SetNextItemWidth(150.0f);
+    dragF("Scale##scene", &s.sceneScale, 0.01f, 100.0f, "%.3f");
+    ImGui::SetItemTooltip("Uniform scale applied to the whole scene as a single root transform\n"
+                          "(absolute, relative to the original file). Use it to match the scene's\n"
+                          "world size to the engine tuning (fixes DDGI probes going wild / red on\n"
+                          "differently-scaled imports).");
+    if (ImGui::Button("Reimport with new scale"))
+        sceneReimport = true;
+    ImGui::SetItemTooltip("Reload the glTF and rebuild at the scale above (brief hitch).");
     }
 
     ImGui::End();

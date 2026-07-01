@@ -73,11 +73,10 @@ struct FogScatterPush {
     glm::mat4  prevViewProj;
     glm::vec4  camPos;
     glm::vec4  sunDir;
-    glm::vec4  sunColor;
+    glm::vec4  sunColor; // rgb radiance, w = jitterScale
     glm::vec4  fog;      // x=density y=scatter z=anisotropy w=ambient
     glm::uvec4 grid;     // xyz dims, w frame
     glm::vec4  zRange;   // x=zn y=zf z=temporalAlpha w=reset
-    glm::vec4  misc;     // x=jitterScale
     glm::vec4  boxMin;   // xyz local fog box min, w = enable
     glm::vec4  boxMax;   // xyz local fog box max, w = edge softness
 };
@@ -2175,12 +2174,13 @@ void Renderer::record(VkCommandBuffer cmd, const Scene& scene,
             sp.prevViewProj = m_prevFogViewProj;
             sp.camPos = glm::vec4(cameraPos, 1.0f);
             sp.sunDir = glm::vec4(sun, 0.0f);
-            sp.sunColor = glm::vec4(settings.sunIntensity * settings.sunTint, 0.0f);
+            // w carries the jitter scale (folded in to keep the push <= 256 bytes).
+            sp.sunColor = glm::vec4(settings.sunIntensity * settings.sunTint,
+                                    settings.fogJitter ? 1.0f : 0.0f);
             sp.fog = glm::vec4(settings.fogDensity, settings.fogScatter,
                                settings.fogAnisotropy, settings.fogAmbient);
             sp.grid = grid;
             sp.zRange = glm::vec4(zn, zf, settings.fogTemporalAlpha, fogReset ? 1.0f : 0.0f);
-            sp.misc = glm::vec4(settings.fogJitter ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
             sp.boxMin = glm::vec4(settings.fogBoxMin, settings.fogBoxEnabled ? 1.0f : 0.0f);
             sp.boxMax = glm::vec4(settings.fogBoxMax, settings.fogBoxEdge);
             vkCmdPushConstants(cmd, m_fogScatterLayout, VK_SHADER_STAGE_COMPUTE_BIT,

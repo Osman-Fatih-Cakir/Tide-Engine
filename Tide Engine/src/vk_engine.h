@@ -63,6 +63,7 @@ private:
     void initProfiler();
     void initImmediate();
     void loadScene();
+    void reimportScene(float scale); // reload the glTF, applying a root uniform scale
 
     // --- per-frame ---
     void drawFrame(float dt);
