@@ -12,58 +12,28 @@
 
 ## Overview
 
-Tide Engine is an ongoing tech demo and learning project, built from scratch to explore modern rendering architectures, hardware ray tracing, and advanced post-processing techniques. Rather than being a general-purpose game engine, it serves as a highly specialized playground for cutting-edge graphics implementations.
+Tide Engine is a tech demo and learning project, built from scratch to explore modern rendering architectures such as hardware ray tracing, real-time GI, reflections etc. Rather than being a general-purpose game engine, it serves as a highly specialized playground for cutting-edge graphics implementations.
 
-![Tide Engine Showcase](Media/Tide.png)
+![Tide Engine Showcase](Media/Tide1.png)
+![Tide Engine Showcase](Media/Tide2.png)
 *(Render result showcasing RT Shadows, Volumetrics, and PBR)*
 
 Video demos: [youtube.com/@osmanfatihcakr3435](https://www.youtube.com/@osmanfatihcakr3435)
 
-## Key Features
+## Rendering Features
 
-### Modern Rendering Pipeline
-*   **Vulkan 1.3 Backend:** Utilizing modern Vulkan features, minimal overhead.
-*   **Visibility Buffer Architecture:** Decoupled geometry and shading passes. Rasterizes visibility (instance + primitive ID) and uses compute shaders to reconstruct geometry and evaluate PBR lighting.
-*   **Bindless Resources:** Heavy use of descriptor indexing and buffer device addresses to eliminate CPU binding overhead.
-
-### Ray Traced Shadows & Illumination
-*   **Hardware Ray Tracing (Ray Query):** Exact, analytically correct soft shadows evaluated per-pixel via inline ray tracing (`VK_KHR_ray_query`).
-*   **Physically Based Rendering (PBR):** Standard Cook-Torrance metallic-roughness workflow with selectable ACES / AgX tonemapping.
-
-### Advanced Denoising Techniques
-The engine supports interchangeable, mutually exclusive denoisers to clean up the noisy 1spp ray-traced shadow signals:
-*   **Custom Temporal Accumulation:** Reprojection with EMA and depth-validation.
-*   **SVGF-lite (A-Trous):** Edge-aware spatial blurring using normal and depth edge-stopping functions.
-*   **NVIDIA DLSS 3.5 Ray Reconstruction:** Full integration of NGX to completely bypass local denoisers and utilize AI-driven temporal/spatial upscaling and noise reduction.
-
-### Volumetric Fog (Froxel-based)
-*   **3D Froxel Grid:** Computes participating media density and scattering across a 3D view-frustum volume.
-*   **RT-Shadowed God Rays:** Each froxel evaluates ray-traced shadows to correctly handle light shafts (god rays) streaming through complex geometry.
-*   **Temporal & Spatial Filtering:** Uses temporal reprojection, per-froxel jittering, and 3D blurring to resolve noise.
-*   **Soft Depth Occlusion:** Prevents light leaking artifacts with precise depth-fading.
-
-### Realtime Global Illumination (DDGI)
-*   **World-Space Probe Grid:** A regular grid of irradiance probes wraps the scene; each probe traces rays into the TLAS to capture diffuse indirect light, replacing flat ambient with real sun bounces.
-*   **Octahedral Irradiance & Depth Atlases:** Per-probe irradiance and depth/moments are encoded octahedrally into shared atlases, sampled with trilinear + normal-aware weighting.
-*   **Multi-Bounce Feedback:** Probes re-sample the previous frame's irradiance at ray hits (RTXGI-style), so light energy accumulates over multiple bounces and naturally fills the room.
-*   **Probe Classification (Leak-Free):** Probes that land inside or behind geometry are detected (via backface ray ratio) and excluded from interpolation, eliminating light leaks through thin walls with **zero per-pixel rays** — true to DDGI's amortized design. Combined with Chebyshev variance-depth visibility and temporal hysteresis.
-
-### Ray Traced Ambient Occlusion (RTAO)
-*   **TLAS-Based AO:** Cosine-weighted hemisphere rays are traced against the scene acceleration structure to compute exact contact and corner occlusion.
-*   **Indirect-Only Modulation:** AO darkens only the ambient/indirect term, grounding objects without crushing direct sunlight.
-*   **Shared Denoiser Stack:** Piggybacks the shadow denoiser (Temporal / SVGF / DLSS RR), so just a few rays per pixel resolve cleanly.
-
-### Hybrid Reflections (SSR + Ray Traced)
-*   **Screen-Space Reflections:** Reflected rays march the depth buffer to reflect the lit on-screen scene, with depth-thickness intersection and screen-border fade.
-*   **Ray Traced Fallback:** Where the screen-space march misses (off-screen or occluded), the reflected ray is traced into the TLAS and shaded with direct sun (RT-shadowed) plus DDGI indirect at the hit — selectable as SSR, SSR + RT, or RT-only.
-*   **GGX Glossy Reflections:** Reflection directions are importance-sampled from the GGX microfacet distribution, so rough surfaces blur the reflection while smooth ones stay mirror-sharp.
-*   **Physically Based Compositing:** Reflections are weighted by roughness-aware Fresnel and the split-sum environment BRDF, and denoised by the shared denoiser stack (notably DLSS Ray Reconstruction).
-
-### Developer Tools & Utilities
-*   **Real-time UI:** Immediate feedback and variable tweaking via integrated ImGui.
-*   **Cinematic Camera Path:** Capture camera waypoints, reorder/edit them in-place, and play a smooth flythrough (position lerp + quaternion-slerp rotation), with optional looping — ideal for demo reels.
-*   **Profiling:** Deeply integrated Tracy CPU and GPU markers for granular performance analysis.
-*   **State Persistence:** Saves and loads camera coordinates, the camera path, and all environment settings on the fly.
+*   **Renderer** - Vulkan 1.3 visibility buffer, bindless resources.
+*   **Physically Based Rendering** - Cook-Torrance metallic-roughness.
+*   **Ray Traced Shadows** - inline ray query (`VK_KHR_ray_query`).
+*   **Shadow Denoising** - temporal, SVGF-lite, or DLSS 3.5 Ray Reconstruction.
+*   **Realtime Global Illumination** - DDGI
+*   **Ambient Occlusion** - ray traced ambient occlusion
+*   **Reflections** - hybrid SSR and/or ray-traced reflection.
+*   **Volumetric Fog** - froxel grid with RT-shadowed god rays.
+*   **Transparency**
+*   **Emissive Materials**
+*   **Bloom** - dual-filter (COD/Jimenez) mip chain.
+*   **Tonemapping** - ACES / AgX.
 
 ## Controls
 
@@ -74,8 +44,6 @@ The engine supports interchangeable, mutually exclusive denoisers to clean up th
 | **Q / E** | Move down / up |
 | **Left Shift (hold)** | Move faster |
 | **F11** | Toggle borderless fullscreen |
-
-All rendering, lighting, fog, GI, AO, reflection, and tonemapping parameters — plus the cinematic camera-path editor — are tweakable live from the on-screen ImGui panel.
 
 ## Building the Project
 
@@ -99,7 +67,10 @@ The engine is built entirely using **Visual Studio 2022**.
 
 ## Acknowledgments / Credits
 
-*   **Test Scene Asset:** The 3D environment used for testing and demonstrating the engine features is sourced from [Fab.com](https://www.fab.com/listings/4da78da6-44b3-4adf-8883-219fe17b44d4) (free-to-use).
+*   **Test Scene Asset:** The 3D environments used for testing and demonstrating the engine features is sourced from:
+   - [Fab.com](https://www.fab.com/listings/4da78da6-44b3-4adf-8883-219fe17b44d4)
+   - [Fab.com](https://www.fab.com/listings/8b8819e4-9278-45bb-865f-3ea8a332cc07)
+
 
 ## License
 
