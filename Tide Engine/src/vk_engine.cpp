@@ -1,5 +1,6 @@
 #include "vk_engine.h"
 #include "gltf_loader.h"
+#include "scene_list.h"
 #include <fstream>
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -14,6 +15,10 @@ static constexpr bool kEnableValidation = true;
 #else
 static constexpr bool kEnableValidation = false;
 #endif
+
+// Restart flag: a UI scene switch requests a full teardown+reinit so the new
+// scene loads from its own state file. Set in drawFrame, consumed by main.
+static bool s_restart = false;
 
 // Device extensions we require up-front (bindless / RT / DLSS).
 static const char* kDeviceExtensions[] = {
@@ -91,6 +96,7 @@ void VulkanEngine::init() {
     initFrames();
     initProfiler();
     initImmediate();
+    m_activeScene = loadActiveScene(); // picks the glTF + state file for this run
     loadScene();
     recreateDlssFeature();
     if (m_scene.setLayout) {
@@ -641,9 +647,7 @@ void VulkanEngine::immediateSubmit(const std::function<void(VkCommandBuffer)>& f
 // ===========================================================================
 // Scene load
 // ===========================================================================
-// Active scene glTF (relative to the working dir / repo root).
-//static constexpr const char* kScenePath = "../Resources/Christmas Room/Room.gltf";
-static constexpr const char* kScenePath = "../Resources/Cigar Room/Room_Windowed.gltf";
+// Active scene glTF + state file come from kScenes[m_activeScene] (see scene_list.h).
 
 // Prepend a single uniform root scale to every instance + the bounds (scales world
 // positions and sizes together, preserving layout). scale==1 is a no-op.
@@ -657,11 +661,11 @@ static void applySceneScale(MeshData& data, float scale) {
 
 void VulkanEngine::loadScene() {
     MeshData data;
-    if (!loadGltf(kScenePath, data)) {
+    if (!loadGltf(kScenes[m_activeScene].gltf, data)) {
         TE_ERROR("glTF load failed; continuing with empty scene.\n");
         return;
     }
-    TE_INFO("Loaded scene: %s\n", kScenePath);
+    TE_INFO("Loaded scene: %s\n", kScenes[m_activeScene].gltf);
     applySceneScale(data, m_settings.sceneScale);
     m_scene.build(*this, data);
 
@@ -681,7 +685,7 @@ void VulkanEngine::loadScene() {
 // where it is (per design); DDGI/fog auto-fit to the new bounds on the next frame.
 void VulkanEngine::reimportScene(float scale) {
     MeshData data;
-    if (!loadGltf(kScenePath, data)) {
+    if (!loadGltf(kScenes[m_activeScene].gltf, data)) {
         TE_ERROR("Scene reimport failed: glTF load error.\n");
         return; // keep the existing scene
     }
@@ -879,11 +883,20 @@ void VulkanEngine::drawFrame(float dt) {
 
     // Build the UI only once we know we'll render this frame.
     bool playToggled = false, sceneReimport = false;
+    int  sceneSwitchTo = -1;
     { ZoneScopedN("ImGui Build");
       m_ui.beginFrame();
       // displays previous frame's CPU ms; playToggled/sceneReimport set by their buttons
       m_ui.buildPanel(m_settings, m_camera, m_camPlaying, playToggled, sceneReimport,
-                      dt, m_lastCpuMs); }
+                      m_activeScene, sceneSwitchTo, dt, m_lastCpuMs); }
+    // Scene switch: remember the new scene, then request a full engine restart.
+    // cleanup() still saves the CURRENT scene's state (m_activeScene unchanged),
+    // and the next init() reads the pointer file to open the new scene + its file.
+    if (sceneSwitchTo >= 0 && sceneSwitchTo != m_activeScene) {
+        saveActiveScene(sceneSwitchTo);
+        s_restart = true;
+        glfwSetWindowShouldClose(m_window, GLFW_TRUE); // exits run(); main reinits
+    }
     if (playToggled) {
         if (m_camPlaying) {
             m_camPlaying = false; // stop: leave the camera where it is
@@ -1078,8 +1091,9 @@ struct StateBlob {
     glm::vec3 camPos;
     float     yaw, pitch, fov;
 };
-constexpr const char* kStateFile = "tide_state.bin";
 }
+
+bool VulkanEngine::consumeRestart() { bool r = s_restart; s_restart = false; return r; }
 
 void VulkanEngine::saveState() {
     StateBlob b{};
@@ -1087,12 +1101,12 @@ void VulkanEngine::saveState() {
     b.settings = m_settings;
     b.camPos = m_camera.position;
     b.yaw = m_camera.yaw; b.pitch = m_camera.pitch; b.fov = m_camera.fovDeg;
-    std::ofstream o(kStateFile, std::ios::binary);
+    std::ofstream o(kScenes[m_activeScene].stateFile, std::ios::binary);
     if (o) o.write(reinterpret_cast<const char*>(&b), sizeof(b));
 }
 
 bool VulkanEngine::loadState() {
-    std::ifstream i(kStateFile, std::ios::binary);
+    std::ifstream i(kScenes[m_activeScene].stateFile, std::ios::binary);
     if (!i) return false;
     StateBlob b{};
     if (!i.read(reinterpret_cast<char*>(&b), sizeof(b))) return false;

@@ -8,8 +8,12 @@
 *.VC.opendb
 
 # --- Build output / intermediate ---
-Bin/
-[Bb]in/
+# Ignore Bin/ contents but keep the per-scene settings files (listed by name).
+Bin/*
+[Bb]in/*
+!Bin/cigar_room_tide_state.bin
+!Bin/christmas_tide_state.bin
+!Bin/tide_active_scene.txt
 [Oo]bj/
 [Dd]ebug/
 [Rr]elease/
