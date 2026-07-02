@@ -47,19 +47,28 @@ void main() {
     float spacing  = min(ddgi.gridSpacing.x, min(ddgi.gridSpacing.y, ddgi.gridSpacing.z));
     float minFront = 0.20 * spacing; // how close a probe may sit to a frontface
 
-    vec3 newOffset = offset;
+    vec3  newOffset = offset;
+    float alpha     = 0.05; // per-frame damping: converge over ~many frames, average out
+                            // the per-frame ray-rotation noise instead of snapping.
     if (closestBack < 1e30 && float(backCount) / float(rays) > 0.25) {
         // Inside geometry: step along the nearest backface ray to cross out of the wall.
+        // Escape fast — a probe buried in a wall must not linger for dozens of frames.
         newOffset = offset + closestBackDir * (closestBack + minFront);
+        alpha     = 0.5;
     } else if (closestFront < minFront) {
         // Too close to a surface: back away toward the most open direction (only when it
         // points roughly opposite, so we don't move straight into another near surface).
         if (dot(closestFrontDir, farthestFrontDir) <= 0.0)
             newOffset = offset + farthestFrontDir * minFront;
     } else {
-        // Plenty of room: ease the offset back toward the grid slot.
-        newOffset = offset * 0.95;
+        // Plenty of room: leave the probe where it is (deadband). No slot-decay tug, so a
+        // settled probe in open space stops moving instead of oscillating with the branches
+        // above. Only relocate when actually buried or too close to a surface.
+        newOffset = offset;
     }
+
+    // Damp toward the target so per-frame stochastic ray directions don't jitter the probe.
+    newOffset = mix(offset, newOffset, alpha);
 
     // Keep the probe within ~0.45 cell of its slot (never swaps with a neighbour).
     vec3 maxOff = 0.45 * ddgi.gridSpacing.xyz;
